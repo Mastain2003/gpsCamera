@@ -1,0 +1,4 @@
+Switch Mastain -> Sanchi (Android):
+1. Edit app/src/main/res/values/brand.xml : app_name, brand_name, brand_primary (Sanchi green #0B7A3B)
+2. Replace app/src/main/res/drawable/brand_logo.xml with the Sanchi logo (vector xml) - or keep it and just change colours.
+No code changes needed. Push to GitHub again; a new APK builds automatically.
