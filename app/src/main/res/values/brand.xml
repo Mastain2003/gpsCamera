@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MASTAIN brand. To switch to Sanchi: change these 3 values and replace drawable/brand_logo.xml -->
+    <string name="app_name">Mastain GPS Camera</string>
+    <string name="brand_name">MASTAIN</string>
+    <color name="brand_primary">#1E5AA8</color>
+</resources>

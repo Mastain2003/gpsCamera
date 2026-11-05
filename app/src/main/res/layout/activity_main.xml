@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:fitsSystemWindows="true" android:background="#000000">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:background="@color/brand_primary" android:gravity="center_vertical" android:padding="10dp">
+        <ImageView android:layout_width="36dp" android:layout_height="36dp" android:src="@drawable/brand_logo"/>
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="10dp" android:text="@string/brand_name"
+            android:textColor="#FFFFFF" android:textSize="18sp" android:textStyle="bold"/>
+    </LinearLayout>
+    <androidx.camera.view.PreviewView android:id="@+id/preview"
+        android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"/>
+    <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:padding="6dp" android:gravity="center" android:textColor="#CCCCCC" android:textSize="12sp" android:text="Waiting for GPS…"/>
+    <TextView android:id="@+id/timer" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center" android:textColor="#FF5252" android:textSize="18sp" android:textStyle="bold"
+        android:visibility="gone" android:text="00:00"/>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center" android:orientation="horizontal" android:paddingTop="6dp">
+        <TextView android:id="@+id/tabPhoto" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:padding="10dp" android:text="PHOTO" android:textColor="#FFFFFF" android:textStyle="bold"/>
+        <TextView android:id="@+id/tabVideo" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:padding="10dp" android:text="VIDEO" android:textColor="#FFFFFF" android:textStyle="bold"/>
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_vertical" android:orientation="horizontal" android:paddingBottom="18dp" android:paddingTop="6dp">
+        <FrameLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1">
+            <ImageView android:id="@+id/btnGallery" android:layout_width="52dp" android:layout_height="52dp"
+                android:layout_gravity="center" android:scaleType="centerCrop" android:background="@drawable/thumb_bg"
+                android:clipToOutline="true"/>
+        </FrameLayout>
+        <TextView android:id="@+id/shutter" android:layout_width="76dp" android:layout_height="76dp"
+            android:gravity="center" android:background="@drawable/shutter" android:textColor="#FFFFFF" android:textSize="28sp"/>
+        <FrameLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1">
+            <TextView android:id="@+id/btnFlip" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="center" android:text="🔄" android:textSize="30sp"/>
+            <TextView android:id="@+id/btnPause" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="center" android:text="⏸" android:textSize="30sp"
+                android:textColor="#FFFFFF" android:visibility="invisible"/>
+        </FrameLayout>
+    </LinearLayout>
+</LinearLayout>
