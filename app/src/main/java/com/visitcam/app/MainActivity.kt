@@ -41,8 +41,9 @@ class MainActivity : AppCompatActivity() {
     private var gpsText = "Waiting for GPS…"
     private var mock = false
     private val io = Executors.newSingleThreadExecutor()
-    private val perms = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION +
-        (if (Build.VERSION.SDK_INT <= 28) arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE) else emptyArray())
+       private val perms: Array<String> = arrayOf(
+        Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION
+    ) + (if (Build.VERSION.SDK_INT <= 28) arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE) else emptyArray<String>())
     private val brand get() = getString(R.string.brand_name)
 
     override fun onCreate(b: Bundle?) {
