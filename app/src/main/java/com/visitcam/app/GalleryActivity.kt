@@ -11,7 +11,9 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.Size
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -19,11 +21,13 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import java.util.concurrent.Executors
 
-class MediaItem(val uri: Uri, val video: Boolean, val date: Long)
+class MediaItem(val uri: Uri, val video: Boolean, val date: Long, val name: String = "")
 
-fun shareUri(ctx: Context, uri: Uri, video: Boolean) {
+fun shareUri(ctx: Context, uri: Uri, video: Boolean) = shareMime(ctx, uri, if (video) "video/mp4" else "image/jpeg")
+
+fun shareMime(ctx: Context, uri: Uri, mime: String) {
     val i = Intent(Intent.ACTION_SEND).apply {
-        type = if (video) "video/mp4" else "image/jpeg"
+        type = mime
         putExtra(Intent.EXTRA_STREAM, uri)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
@@ -44,12 +48,12 @@ fun loadMedia(ctx: Context): List<MediaItem> {
     val brand = ctx.getString(R.string.brand_name)
     val list = mutableListOf<MediaItem>()
     fun q(base: Uri, video: Boolean) {
-        val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED)
+        val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED, MediaStore.MediaColumns.DISPLAY_NAME)
         val sel: String; val args: Array<String>
         if (Build.VERSION.SDK_INT >= 29) { sel = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"; args = arrayOf("%/$brand/%") }
         else { sel = MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?"; args = arrayOf("${brand}_%") }
         ctx.contentResolver.query(base, proj, sel, args, MediaStore.MediaColumns.DATE_ADDED + " DESC")?.use { c ->
-            while (c.moveToNext()) list.add(MediaItem(ContentUris.withAppendedId(base, c.getLong(0)), video, c.getLong(1)))
+            while (c.moveToNext()) list.add(MediaItem(ContentUris.withAppendedId(base, c.getLong(0)), video, c.getLong(1), c.getString(2) ?: ""))
         }
     }
     q(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, false)
@@ -57,7 +61,7 @@ fun loadMedia(ctx: Context): List<MediaItem> {
     return list.sortedByDescending { it.date }
 }
 
-class GalleryActivity : AppCompatActivity() {
+class GalleryActivity : BaseActivity() {
     private var items = listOf<MediaItem>()
     private val io = Executors.newFixedThreadPool(2)
     private val ui = Handler(Looper.getMainLooper())
@@ -110,30 +114,63 @@ class GalleryActivity : AppCompatActivity() {
     private fun load() = loadMedia(this)
 }
 
-class ViewerActivity : AppCompatActivity() {
+class ViewerActivity : BaseActivity() {
+    private var items = mutableListOf<MediaItem>()
+    private var idx = 0
+    private lateinit var gd: GestureDetector
+
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         setContentView(R.layout.activity_viewer)
-        val uri = Uri.parse(intent.getStringExtra("uri"))
-        val video = intent.getBooleanExtra("video", false)
+        items = loadMedia(this).toMutableList()
+        val uri = intent.getStringExtra("uri")
+        idx = items.indexOfFirst { it.uri.toString() == uri }.coerceAtLeast(0)
+        gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                if (e1 == null) return false
+                val dx = e2.x - e1.x; val dy = e2.y - e1.y
+                if (Math.abs(dx) > 120 && Math.abs(dx) > Math.abs(dy) * 1.5f) { go(if (dx < 0) 1 else -1); return true }
+                return false
+            }
+        })
+        findViewById<View>(R.id.share).setOnClickListener { items.getOrNull(idx)?.let { shareUri(this, it.uri, it.video) } }
+        findViewById<View>(R.id.close).setOnClickListener { finish() }
+        findViewById<View>(R.id.delete).setOnClickListener {
+            val m = items.getOrNull(idx) ?: return@setOnClickListener
+            AlertDialog.Builder(this).setMessage("Delete this item?")
+                .setPositiveButton("Delete") { _, _ ->
+                    try { contentResolver.delete(m.uri, null, null) } catch (e: Exception) { }
+                    items.removeAt(idx)
+                    if (items.isEmpty()) finish() else { idx = minOf(idx, items.size - 1); show() }
+                }.setNegativeButton("Cancel", null).show()
+        }
+        if (items.isEmpty()) finish() else show()
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        gd.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun go(d: Int) {
+        val n = idx + d
+        if (n in items.indices) { idx = n; show() }
+    }
+
+    private fun show() {
+        val m = items[idx]
+        findViewById<TextView>(R.id.counter).text = "${idx + 1} / ${items.size}   (swipe left or right)"
         val iv = findViewById<ImageView>(R.id.img)
         val vv = findViewById<VideoView>(R.id.vid)
-        if (video) {
+        vv.stopPlayback()
+        if (m.video) {
             iv.visibility = View.GONE; vv.visibility = View.VISIBLE
-            vv.setVideoURI(uri)
+            vv.setVideoURI(m.uri)
             vv.setMediaController(MediaController(this).also { it.setAnchorView(vv) })
             vv.setOnPreparedListener { vv.start() }
         } else {
-            vv.visibility = View.GONE; iv.setImageURI(uri)
-        }
-        findViewById<View>(R.id.share).setOnClickListener { shareUri(this, uri, video) }
-        findViewById<View>(R.id.close).setOnClickListener { finish() }
-        findViewById<View>(R.id.delete).setOnClickListener {
-            AlertDialog.Builder(this).setMessage("Delete this item?")
-                .setPositiveButton("Delete") { _, _ ->
-                    try { contentResolver.delete(uri, null, null) } catch (e: Exception) { }
-                    finish()
-                }.setNegativeButton("Cancel", null).show()
+            vv.visibility = View.GONE; iv.visibility = View.VISIBLE
+            iv.setImageURI(m.uri)
         }
     }
 }
