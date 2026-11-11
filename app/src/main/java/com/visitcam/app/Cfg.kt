@@ -165,3 +165,12 @@ class Screen(val a: BaseActivity, title: String) {
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = a.dp(12) })
     }
 }
+
+fun headingName(deg: Float): String {
+    val en = arrayOf("North", "North East", "East", "South East", "South", "South West", "West", "North West")
+    val hi = arrayOf("उत्तर", "उत्तर-पूर्व", "पूर्व", "दक्षिण-पूर्व", "दक्षिण", "दक्षिण-पश्चिम", "पश्चिम", "उत्तर-पश्चिम")
+    val i = (((deg + 22.5f) / 45f).toInt()) % 8
+    return if (Lang.hi) hi[i] else en[i]
+}
+
+fun headingLine(deg: Float): String = tr("Heading: ", "दिशा: ") + headingName(deg)

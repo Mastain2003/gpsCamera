@@ -6,14 +6,18 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.*
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.location.Geocoder
 import android.location.Location
+import android.location.LocationManager
+import android.media.MediaActionSound
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -23,19 +27,25 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Rational
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.OrientationEventListener
 import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.View
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.*
 import androidx.camera.core.Camera
@@ -48,21 +58,27 @@ import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.*
 import java.util.Locale
 import java.util.concurrent.Executors
 
 class MainActivity : BaseActivity(), SensorEventListener {
     companion object {
+        const val REQ_LOC = 77
         val WB_MODES = intArrayOf(
             CaptureRequest.CONTROL_AWB_MODE_INCANDESCENT, CaptureRequest.CONTROL_AWB_MODE_FLUORESCENT,
             CaptureRequest.CONTROL_AWB_MODE_DAYLIGHT, CaptureRequest.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT,
             CaptureRequest.CONTROL_AWB_MODE_SHADE)
         val WB_K = intArrayOf(2700, 4000, 5500, 6500, 7500)
+        val OPT_KEYS = listOf("timer", "ratio", "grid", "focus", "bright", "wb", "temp", "level", "mirror", "sound", "stab", "quality")
     }
 
     private var provider: ProcessCameraProvider? = null
     private var cam: Camera? = null
+    private var previewUc: Preview? = null
     private var imageCapture: ImageCapture? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var recording: Recording? = null
@@ -72,13 +88,22 @@ class MainActivity : BaseActivity(), SensorEventListener {
     private var flashMode = 0
     private var timerSec = 0
     private var ratio = 0
-    private var gridOn = false
+    private var gridMode = 0
     private var wbIdx = -1
+    private var focusMode = 0
+    private var focusDist = 0f
+    private var minFocus = 0f
+    private var evSupported = false
     private var evLower = 0
+    private var evUpper = 0
+    private var evIndex = 0
     private var evStep = 1f
+    private var optSel = "timer"
     private var counting = false
     private var lastSig = ""
     private var dlgUri: Uri? = null
+    private var askingLoc = false
+    private var locOff = false
     private lateinit var fused: FusedLocationProviderClient
     @Volatile private var loc: Location? = null
     private var gpsText = "…"
@@ -91,12 +116,46 @@ class MainActivity : BaseActivity(), SensorEventListener {
     @Volatile private var heading = 0f
     @Volatile private var currentVideoId: String? = null
     @Volatile private var sensorRot = 90
+    @Volatile private var recRot = 90
+    @Volatile private var devSurface = Surface.ROTATION_0
     private var logoBmp: Bitmap? = null
     private val ovThread = HandlerThread("overlay").apply { start() }
+    private val snd by lazy { MediaActionSound() }
     private val perms: Array<String> = arrayOf(
         Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION
     ) + (if (Build.VERSION.SDK_INT <= 28) arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE) else emptyArray<String>())
     private val brand get() = getString(R.string.brand_name)
+    private val hasGms get() = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this) == ConnectionResult.SUCCESS
+
+    private val lmListener = object : android.location.LocationListener {
+        override fun onLocationChanged(l: Location) { onNewLocation(l) }
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
+        override fun onProviderEnabled(p: String) {}
+        override fun onProviderDisabled(p: String) {}
+    }
+
+    private val tick = object : Runnable {
+        override fun run() { findViewById<View>(R.id.stampView)?.invalidate(); ui.postDelayed(this, 1000) }
+    }
+
+    private val oel by lazy {
+        object : OrientationEventListener(this) {
+            override fun onOrientationChanged(o: Int) {
+                if (o == ORIENTATION_UNKNOWN) return
+                val s = when { o in 45..134 -> Surface.ROTATION_270; o in 135..224 -> Surface.ROTATION_180; o in 225..314 -> Surface.ROTATION_90; else -> Surface.ROTATION_0 }
+                if (s == devSurface) return
+                devSurface = s
+                imageCapture?.targetRotation = s
+                if (recording == null) {
+                    videoCapture?.targetRotation = s
+                    findViewById<StampView>(R.id.stampView)?.rotDeg = when (s) { Surface.ROTATION_270 -> 90; Surface.ROTATION_180 -> 180; Surface.ROTATION_90 -> 270; else -> 0 }
+                }
+            }
+        }
+    }
+
+    private fun rotRel(surface: Int): Int = (((sensorRot - surface * 90 * (if (back) 1 else -1)) % 360) + 360) % 360
 
     private val overlay: OverlayEffect by lazy {
         val fx = OverlayEffect(CameraEffect.VIDEO_CAPTURE, 0, Handler(ovThread.looper), androidx.core.util.Consumer<Throwable> { })
@@ -108,7 +167,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
                 val bw = cv.width.toFloat(); val bh = cv.height.toFloat()
                 cv.save()
                 val uw: Float; val uh: Float
-                when (sensorRot) {
+                when (recRot) {
                     90 -> { cv.translate(0f, bh); cv.rotate(-90f); uw = bh; uh = bw }
                     270 -> { cv.translate(bw, 0f); cv.rotate(90f); uw = bh; uh = bw }
                     180 -> { cv.translate(bw, bh); cv.rotate(180f); uw = bw; uh = bh }
@@ -122,27 +181,37 @@ class MainActivity : BaseActivity(), SensorEventListener {
         fx
     }
 
-    private fun seekL(f: (Int, Boolean) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
-        override fun onProgressChanged(s: SeekBar, p: Int, user: Boolean) = f(p, user)
-        override fun onStartTrackingTouch(s: SeekBar) {}
-        override fun onStopTrackingTouch(s: SeekBar) {}
-    }
+    // ------------------------------------------------------------------ setup
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         setContentView(R.layout.activity_main)
         logoBmp = ContextCompat.getDrawable(this, R.drawable.brand_logo)?.toBitmap(128, 128)
         fused = LocationServices.getFusedLocationProviderClient(this)
-        ratio = getI("ratio", 0); gridOn = getB("grid", false); timerSec = getI("timer", 0)
+        ratio = getI("ratio", 0); gridMode = getI("gridMode", 0); timerSec = getI("timer", 0)
         lastSig = sig()
+        wire()
+        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) start()
+        else ActivityCompat.requestPermissions(this, perms, 1)
+    }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val rec = recording != null
+        setContentView(R.layout.activity_main)
+        wire()
+        if (rec) { previewUc?.setSurfaceProvider(findViewById<PreviewView>(R.id.preview).surfaceProvider); recordingUi(true) }
+        else bindCamera()
+        refreshThumb()
+    }
+
+    private fun click(id: Int, f: () -> Unit) = findViewById<View>(id).setOnClickListener { f() }
+
+    private fun wire() {
         click(R.id.btnFlash) { flashMode = (flashMode + 1) % 4; applyFlash(); updateTop() }
-        click(R.id.btnTimer) { timerSec = when (timerSec) { 0 -> 3; 3 -> 5; 5 -> 10; else -> 0 }; putI("timer", timerSec); updateTop() }
-        click(R.id.btnRatio) { if (recording == null) { ratio = (ratio + 1) % 4; putI("ratio", ratio); updateTop(); bindCamera() } }
-        click(R.id.btnGridToggle) { gridOn = !gridOn; putB("grid", gridOn); updateTop() }
-        click(R.id.btnTune) {
-            val p = findViewById<View>(R.id.panelTune)
-            p.visibility = if (p.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        click(R.id.btnOptions) {
+            val p = findViewById<View>(R.id.panelOptions)
+            if (p.visibility == View.VISIBLE) p.visibility = View.GONE else { buildOptions(); p.visibility = View.VISIBLE }
         }
         click(R.id.btnFlip) { if (recording == null) { back = !back; bindCamera() } }
         click(R.id.btnSettings) { if (recording == null) startActivity(Intent(this, SettingsActivity::class.java)) }
@@ -154,10 +223,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         click(R.id.btnGallery) { startActivity(Intent(this, GalleryActivity::class.java)) }
         click(R.id.cellLocation) { startActivity(Intent(this, LocationActivity::class.java)) }
         click(R.id.cellStorage) { openStorage() }
-        click(R.id.cellTemplates) {
-            AlertDialog.Builder(this).setTitle(tr("Templates", "टेम्पलेट"))
-                .setSingleChoiceItems(STYLE_NAMES, getI("style", 0)) { d, w -> putI("style", w); d.dismiss() }.show()
-        }
+        click(R.id.cellTemplates) { pickStamp(this) { } }
         click(R.id.shutter) { shutterClick() }
         click(R.id.btnPause) {
             val r = recording
@@ -167,15 +233,6 @@ class MainActivity : BaseActivity(), SensorEventListener {
                 findViewById<TextView>(R.id.btnPause).text = if (paused) "▶" else "⏸"
             }
         }
-        click(R.id.btnWbAuto) { wbIdx = -1; applyWb(); updateTemp() }
-        findViewById<SeekBar>(R.id.seekTemp).setOnSeekBarChangeListener(seekL { p, user ->
-            if (user) { wbIdx = p; applyWb(); updateTemp() }
-        })
-        findViewById<SeekBar>(R.id.seekEv).setOnSeekBarChangeListener(seekL { p, user ->
-            if (user) cam?.cameraControl?.setExposureCompensationIndex(p + evLower)
-            findViewById<TextView>(R.id.tvEv).text = tr("Exposure", "एक्सपोज़र") + ": %+.1f EV".format(Locale.US, (p + evLower) * evStep)
-        })
-
         val scaleDet = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
                 val z = cam?.cameraInfo?.zoomState?.value ?: return true
@@ -191,15 +248,13 @@ class MainActivity : BaseActivity(), SensorEventListener {
             override fun onLongPress(e: MotionEvent) { focusAt(e.x, e.y, true) }
         })
         findViewById<PreviewView>(R.id.preview).setOnTouchListener { _, ev -> scaleDet.onTouchEvent(ev); tapDet.onTouchEvent(ev); true }
-
-        applyTexts(); updateTop(); updateUi(); updateTemp()
-        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) start()
-        else ActivityCompat.requestPermissions(this, perms, 1)
+        findViewById<StampView>(R.id.stampView).provider = { loc?.let { l -> buildData(l, liveId()) } }
+        applyTexts(); updateTop(); updateUi()
     }
 
-    private fun click(id: Int, f: () -> Unit) = findViewById<View>(id).setOnClickListener { f() }
+    private fun sig() = getS("photoQ", "high") + getS("videoQ", "hd") + getB("stab", false)
 
-    private fun sig() = getS("photoQ", "high") + getS("videoQ", "hd")
+    private fun liveId() = brand + "_IMG_" + fmtIst("ddMMyyyy_HHmmss", if (TrustedTime.ok) TrustedTime.now() else System.currentTimeMillis()) + "_----"
 
     private fun applyTexts() {
         findViewById<TextView>(R.id.tabPhoto).text = tr("PHOTO", "फोटो")
@@ -209,23 +264,141 @@ class MainActivity : BaseActivity(), SensorEventListener {
         findViewById<TextView>(R.id.lblLocation).text = tr("Location", "लोकेशन")
         findViewById<TextView>(R.id.lblStorage).text = tr("Storage", "स्टोरेज")
         findViewById<TextView>(R.id.lblTemplates).text = tr("Templates", "टेम्पलेट")
-        findViewById<TextView>(R.id.btnWbAuto).text = tr("Auto", "ऑटो")
         updateStatus()
     }
 
     private fun updateTop() {
         findViewById<TextView>(R.id.btnFlash).text = arrayOf("⚡✕", "⚡A", "⚡", "🔦")[flashMode]
-        findViewById<TextView>(R.id.btnTimer).text = if (timerSec == 0) "⏱" else "${timerSec}s"
-        findViewById<TextView>(R.id.btnRatio).text = arrayOf("4:3", "16:9", "1:1", "Full")[ratio]
-        findViewById<View>(R.id.btnGridToggle).alpha = if (gridOn) 1f else 0.5f
-        findViewById<View>(R.id.gridLines).visibility = if (gridOn) View.VISIBLE else View.GONE
+        findViewById<GridLines>(R.id.gridLines).apply { mode = gridMode; visibility = if (gridMode == 0) View.GONE else View.VISIBLE }
+        findViewById<StampView>(R.id.stampView).ratioIdx = ratio
+        findViewById<View>(R.id.levelView).visibility = if (getB("level", false)) View.VISIBLE else View.GONE
     }
 
-    private fun updateTemp() {
-        findViewById<TextView>(R.id.tvTemp).text =
-            if (wbIdx < 0) tr("White balance: Auto", "व्हाइट बैलेंस: ऑटो")
-            else tr("Temperature", "तापमान") + ": ${WB_K[wbIdx]}K  " + (if (wbIdx < 2) tr("warm", "गर्म") else if (wbIdx > 2) tr("cool", "ठंडा") else tr("neutral", "सामान्य"))
+    private fun updateUi() {
+        findViewById<View>(R.id.tabPhoto).alpha = if (videoMode) 0.5f else 1f
+        findViewById<View>(R.id.tabVideo).alpha = if (videoMode) 1f else 0.5f
+        val sh = findViewById<TextView>(R.id.shutter)
+        sh.setBackgroundResource(if (videoMode) R.drawable.shutter_rec else R.drawable.shutter)
+        sh.text = if (recording != null) "■" else ""
     }
+
+    private fun updateZoomUi(z: Float) {
+        val b1 = findViewById<TextView>(R.id.btnZoom1); val b2 = findViewById<TextView>(R.id.btnZoom2); val bx = findViewById<TextView>(R.id.btnZoomX)
+        fun mark(v: TextView, on: Boolean) { v.setBackgroundResource(if (on) R.drawable.round_btn_active else R.drawable.round_btn); v.setTextColor(if (on) Color.BLACK else Color.WHITE) }
+        val is1 = Math.abs(z - 1f) < 0.05f; val is2 = Math.abs(z - 2f) < 0.05f
+        mark(b1, is1); mark(b2, is2)
+        bx.visibility = if (is1 || is2) View.GONE else View.VISIBLE
+        if (!is1 && !is2) { bx.text = "%.1fx".format(Locale.US, z); mark(bx, true) }
+    }
+
+    // ------------------------------------------------------------------ camera options panel
+
+    private fun optIcon(k: String) = when (k) {
+        "timer" -> "⏱"; "ratio" -> "▭"; "grid" -> "▦"; "focus" -> "◎"; "bright" -> "☀"; "wb" -> "WB"
+        "temp" -> "🌡"; "level" -> "📐"; "mirror" -> "⇆"; "sound" -> "🔊"; "stab" -> "🎥"; else -> "HD"
+    }
+
+    private fun optLabel(k: String) = when (k) {
+        "timer" -> tr("Timer", "टाइमर"); "ratio" -> tr("Ratio", "रेशियो"); "grid" -> tr("Grid", "ग्रिड")
+        "focus" -> tr("Focus", "फ़ोकस"); "bright" -> tr("Brightness", "ब्राइटनेस"); "wb" -> tr("White bal.", "व्हाइट बैल.")
+        "temp" -> tr("Temp", "तापमान"); "level" -> tr("Level", "लेवल"); "mirror" -> tr("Mirror", "मिरर")
+        "sound" -> tr("Sound", "आवाज़"); "stab" -> tr("Stabilise", "स्टेबलाइज़"); else -> tr("Quality", "क्वालिटी")
+    }
+
+    private fun buildOptions() {
+        val root = findViewById<LinearLayout>(R.id.panelOptions)
+        root.removeAllViews()
+        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        OPT_KEYS.forEach { k ->
+            row.addView(TextView(this).apply {
+                text = optIcon(k) + "\n" + optLabel(k); textSize = 11f; gravity = Gravity.CENTER
+                setTextColor(if (k == optSel) 0xFFFFCC00.toInt() else Color.WHITE)
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener { optSel = k; buildOptions() }
+            })
+        }
+        hs.addView(row); root.addView(hs)
+        root.addView(optDetail(optSel))
+    }
+
+    private fun note(t: String): View = TextView(this).apply { text = t; setTextColor(0xFFCCCCCC.toInt()); textSize = 13f; setPadding(dp(8), dp(8), dp(8), dp(8)) }
+
+    private fun chips(items: List<String>, sel: Int, pick: (Int) -> Unit): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        items.forEachIndexed { i, t ->
+            row.addView(TextView(this).apply {
+                text = t; textSize = 14f; setPadding(dp(14), dp(8), dp(14), dp(8))
+                setTextColor(if (i == sel) 0xFFFFCC00.toInt() else Color.WHITE)
+                setOnClickListener { pick(i); buildOptions() }
+            })
+        }
+        return HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) }
+    }
+
+    private fun slider(max: Int, prog: Int, label: (Int) -> String, onChange: (Int) -> Unit): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
+        val tv = TextView(this).apply { text = label(prog); setTextColor(Color.WHITE); textSize = 13f }
+        val sb = SeekBar(this).apply { this.max = max; progress = prog }
+        sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar, p: Int, user: Boolean) { tv.text = label(p); if (user) onChange(p) }
+            override fun onStartTrackingTouch(s: SeekBar) {}
+            override fun onStopTrackingTouch(s: SeekBar) {}
+        })
+        col.addView(tv); col.addView(sb)
+        return col
+    }
+
+    private fun onOff(key: String, def: Boolean, after: () -> Unit = {}): View =
+        chips(listOf(tr("Off", "बंद"), tr("On", "चालू")), if (getB(key, def)) 1 else 0) { putB(key, it == 1); after() }
+
+    private fun optDetail(k: String): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        when (k) {
+            "timer" -> col.addView(chips(listOf(tr("Off", "बंद"), "3 s", "5 s", "10 s"), intArrayOf(0, 3, 5, 10).indexOf(timerSec).coerceAtLeast(0)) {
+                timerSec = intArrayOf(0, 3, 5, 10)[it]; putI("timer", timerSec) })
+            "ratio" -> col.addView(chips(listOf("4:3", "16:9", "1:1", "Full"), ratio) {
+                if (recording == null) { ratio = it; putI("ratio", it); updateTop(); bindCamera() } })
+            "grid" -> col.addView(chips(listOf(tr("Off", "बंद"), "3×3", "4×4", tr("Golden", "गोल्डन"), tr("Diagonal", "तिरछा"), tr("Center", "केंद्र")), gridMode) {
+                gridMode = it; putI("gridMode", it); updateTop() })
+            "focus" -> {
+                col.addView(chips(listOf(tr("Auto", "ऑटो"), tr("Lock", "लॉक"), tr("Manual", "मैनुअल")), focusMode) {
+                    focusMode = it; if (it == 1) focusAt(findViewById<View>(R.id.preview).width / 2f, findViewById<View>(R.id.preview).height / 2f, true); applyCam2() })
+                if (focusMode == 2) {
+                    if (minFocus > 0f) col.addView(slider(100, (focusDist / minFocus * 100).toInt(),
+                        { p -> tr("Distance", "दूरी") + ": " + (if (p == 0) "∞" else tr("near", "पास") + " $p%") }) { p -> focusDist = minFocus * p / 100f; applyCam2() })
+                    else col.addView(note(tr("Manual focus is not supported on this camera", "इस कैमरे में मैनुअल फ़ोकस उपलब्ध नहीं")))
+                }
+            }
+            "bright" -> if (evSupported) col.addView(slider(evUpper - evLower, evIndex - evLower,
+                { p -> tr("Exposure", "एक्सपोज़र") + ": %+.1f EV".format(Locale.US, (p + evLower) * evStep) }) { p ->
+                evIndex = p + evLower; cam?.cameraControl?.setExposureCompensationIndex(evIndex) })
+            else col.addView(note(tr("Not supported on this camera", "इस कैमरे में उपलब्ध नहीं")))
+            "wb" -> col.addView(chips(listOf(tr("Auto", "ऑटो"), tr("Incandescent", "बल्ब"), tr("Fluorescent", "ट्यूबलाइट"), tr("Daylight", "दिन"), tr("Cloudy", "बादल"), tr("Shade", "छाया")), wbIdx + 1) {
+                wbIdx = it - 1; applyCam2() })
+            "temp" -> {
+                col.addView(chips(listOf(tr("Auto", "ऑटो"), tr("Manual", "मैनुअल")), if (wbIdx < 0) 0 else 1) { wbIdx = if (it == 0) -1 else 2; applyCam2() })
+                if (wbIdx >= 0) col.addView(slider(4, wbIdx, { p ->
+                    tr("Temperature", "तापमान") + ": ${WB_K[p]}K  " + (if (p < 2) tr("warm", "गर्म") else if (p > 2) tr("cool", "ठंडा") else tr("neutral", "सामान्य"))
+                }) { p -> wbIdx = p; applyCam2() })
+            }
+            "level" -> col.addView(onOff("level", false) { updateTop() })
+            "mirror" -> { col.addView(onOff("mirror", false)); col.addView(note(tr("Selfie photos are saved mirrored", "सेल्फी फोटो मिरर होकर सेव होती हैं"))) }
+            "sound" -> col.addView(onOff("sound", true))
+            "stab" -> { col.addView(onOff("stab", false) { if (videoMode && recording == null) bindCamera() }); col.addView(note(tr("Video stabilisation", "वीडियो स्टेबलाइज़ेशन"))) }
+            else -> {
+                col.addView(note(tr("Photo quality", "फोटो क्वालिटी")))
+                col.addView(chips(listOf(tr("High", "उच्च"), tr("Medium", "मध्यम"), tr("Low", "कम")), listOf("high", "medium", "low").indexOf(getS("photoQ", "high")).coerceAtLeast(0)) {
+                    putS("photoQ", listOf("high", "medium", "low")[it]) })
+                col.addView(note(tr("Video quality", "वीडियो क्वालिटी")))
+                col.addView(chips(listOf("SD", "HD", "Full HD", "4K"), listOf("sd", "hd", "fhd", "uhd").indexOf(getS("videoQ", "hd")).coerceAtLeast(0)) {
+                    putS("videoQ", listOf("sd", "hd", "fhd", "uhd")[it]) })
+            }
+        }
+        return col
+    }
+
+    // ------------------------------------------------------------------ lifecycle / sensors
 
     override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r)
@@ -234,19 +407,28 @@ class MainActivity : BaseActivity(), SensorEventListener {
     }
 
     override fun onResume() {
-        super.onResume(); refreshThumb(); applyTexts()
+        super.onResume(); refreshThumb(); applyTexts(); updateTop()
         if (TrustedTime.ageMs() > 300_000) syncTime()
         if (sig() != lastSig) { lastSig = sig(); if (recording == null) bindCamera() }
         val sm = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        if (oel.canDetectOrientation()) oel.enable()
+        ui.removeCallbacks(tick); ui.post(tick)
+        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) ensureLocationOn()
     }
 
     override fun onPause() {
         super.onPause()
         (getSystemService(Context.SENSOR_SERVICE) as SensorManager).unregisterListener(this)
+        oel.disable(); ui.removeCallbacks(tick)
     }
 
     override fun onSensorChanged(e: SensorEvent) {
+        if (e.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+            findViewById<LevelView>(R.id.levelView)?.angle = Math.toDegrees(Math.atan2(e.values[0].toDouble(), e.values[1].toDouble())).toFloat()
+            return
+        }
         val rm = FloatArray(9); val out = FloatArray(9); val o = FloatArray(3)
         SensorManager.getRotationMatrixFromVector(rm, e.values)
         SensorManager.remapCoordinateSystem(rm, SensorManager.AXIS_X, SensorManager.AXIS_Z, out)
@@ -271,23 +453,77 @@ class MainActivity : BaseActivity(), SensorEventListener {
         return super.onKeyDown(keyCode, event)
     }
 
-    @SuppressLint("MissingPermission")
+    // ------------------------------------------------------------------ location
+
     private fun start() {
-        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000).build()
-        fused.requestLocationUpdates(req, object : LocationCallback() {
-            override fun onLocationResult(r: LocationResult) {
-                val l = r.lastLocation ?: return
-                loc = l; Shared.loc = l
-                mock = isMockLoc(l)
-                gpsText = "GPS: %.6f, %.6f (±%.0f m)".format(l.latitude, l.longitude, l.accuracy)
-                if (mock && recording != null) { recording?.stop(); toast(tr("Recording stopped: mock location detected", "रिकॉर्डिंग बंद: मॉक लोकेशन मिली")) }
-                val now = SystemClock.elapsedRealtime()
-                if (place == null || now - lastPlaceAt > 30_000) { lastPlaceAt = now; bg.execute { refreshPlace(l) } }
-                updateStatus()
-            }
-        }, mainLooper)
+        startLocation()
         val f = ProcessCameraProvider.getInstance(this)
         f.addListener({ provider = f.get(); bindCamera() }, ContextCompat.getMainExecutor(this))
+        ensureLocationOn()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startLocation() {
+        if (hasGms) {
+            val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000).build()
+            fused.requestLocationUpdates(req, object : LocationCallback() {
+                override fun onLocationResult(r: LocationResult) { r.lastLocation?.let { onNewLocation(it) } }
+            }, mainLooper)
+        } else {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            try { lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000L, 0f, lmListener, Looper.getMainLooper()) } catch (e: Exception) { }
+            try { lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 3000L, 0f, lmListener, Looper.getMainLooper()) } catch (e: Exception) { }
+        }
+    }
+
+    private fun onNewLocation(l: Location) {
+        loc = l; Shared.loc = l
+        mock = isMockLoc(l)
+        gpsText = "GPS: %.6f, %.6f (±%.0f m)".format(l.latitude, l.longitude, l.accuracy)
+        if (mock && recording != null) { recording?.stop(); toast(tr("Recording stopped: mock location detected", "रिकॉर्डिंग बंद: मॉक लोकेशन मिली")) }
+        val now = SystemClock.elapsedRealtime()
+        if (place == null || now - lastPlaceAt > 30_000) { lastPlaceAt = now; bg.execute { refreshPlace(l) } }
+        updateStatus()
+    }
+
+    private fun locationEnabled(): Boolean {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return if (Build.VERSION.SDK_INT >= 28) lm.isLocationEnabled
+        else lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    }
+
+    private fun ensureLocationOn() {
+        if (locationEnabled()) { locOff = false; updateStatus(); return }
+        locOff = true; updateStatus()
+        if (askingLoc) return
+        askingLoc = true
+        if (hasGms) {
+            val req = LocationSettingsRequest.Builder()
+                .addLocationRequest(LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000).build()).setAlwaysShow(true).build()
+            LocationServices.getSettingsClient(this).checkLocationSettings(req)
+                .addOnSuccessListener { askingLoc = false }
+                .addOnFailureListener { e ->
+                    if (e is ResolvableApiException) {
+                        try { e.startResolutionForResult(this, REQ_LOC) } catch (x: Exception) { askingLoc = false; showLocDialog() }
+                    } else { askingLoc = false; showLocDialog() }
+                }
+        } else showLocDialog()
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_LOC) { askingLoc = false; if (!locationEnabled()) showLocDialog() else { locOff = false; updateStatus() } }
+    }
+
+    private fun showLocDialog() {
+        askingLoc = true
+        AlertDialog.Builder(this).setCancelable(false)
+            .setTitle(tr("Location is OFF", "लोकेशन बंद है"))
+            .setMessage(tr("Turn on location (GPS) to capture verified photos and videos.", "सत्यापित फोटो और वीडियो के लिए लोकेशन (GPS) चालू करें।"))
+            .setPositiveButton(tr("Open settings", "सेटिंग खोलें")) { _, _ -> askingLoc = false; startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+            .setNegativeButton(tr("Later", "बाद में")) { _, _ -> askingLoc = false }
+            .show()
     }
 
     private fun refreshPlace(l: Location) {
@@ -299,7 +535,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
                 address = a.getAddressLine(0) ?: ""
                 region = listOf(a.locality ?: a.subAdminArea, a.adminArea, a.countryName)
                     .filter { !it.isNullOrBlank() }.distinct().joinToString(", ")
-                flag = flagOf(a.countryCode)
+                flag = a.countryCode ?: ""
             }
         } catch (e: Exception) { }
         val p = Place(region, flag, address, fetchMap(l.latitude, l.longitude))
@@ -310,28 +546,41 @@ class MainActivity : BaseActivity(), SensorEventListener {
         val p = place
         val ms = TrustedTime.now()
         val customs = if (getB("customOnStamp", false)) listOf(getS("c1", ""), getS("c2", ""), getS("c3", "")).filter { it.isNotBlank() } else emptyList()
+        val qr = if (getS("qrMode", "verify") == "maps") "https://maps.google.com/?q=%.6f,%.6f".format(Locale.US, l.latitude, l.longitude)
+        else "$brand|$id|%.6f,%.6f|${ms / 1000}".format(Locale.US, l.latitude, l.longitude)
         return StampData(
             getI("style", 0), brand, getString(R.string.app_name), if (getB("logo", true)) logoBmp else null,
-            p?.region ?: "", p?.flag ?: "", p?.address ?: "",
+            p?.region ?: "", p?.address ?: "",
             l.latitude, l.longitude, l.accuracy, l.accuracy <= 30f, TrustedTime.ok,
             fmtIst("EEEE, dd/MM/yyyy hh:mm a", ms) + " GMT +05:30",
             fmtIst("dd/MM/yyyy  hh:mm a", ms) + " IST",
-            fmtIst("dd/MM/yyyy", ms), ms / 1000, id, p?.map, heading,
+            fmtIst("dd/MM/yyyy", ms), ms / 1000, id, p?.map, heading, headingLine(heading),
+            l.altitude, l.speed * 3.6f, qr,
             customs, if (getB("camInd", false)) (if (back) "REAR" else "FRONT") else null,
             when (getS("opacity", "medium")) { "low" -> 90; "high" -> 210; else -> 150 },
             if (getS("size", "normal") == "small") 0.8f else 1f,
-            when (getS("orient", "auto")) { "portrait" -> 1; "landscape" -> 2; else -> 0 }
+            getS("orient", "auto") == "landscape"
         )
     }
 
+    // ------------------------------------------------------------------ camera
+
     private fun bindCamera() {
         val p = provider ?: return
+        if (!bindWith(p, true) && videoMode) {
+            if (bindWith(p, false)) toast(tr("Stamp on video is not supported on this phone", "इस फ़ोन पर वीडियो में स्टैम्प उपलब्ध नहीं"))
+            else toast(tr("This camera is not available", "यह कैमरा उपलब्ध नहीं है"))
+        } else if (!videoMode && cam == null) toast(tr("This camera is not available", "यह कैमरा उपलब्ध नहीं है"))
+    }
+
+    private fun bindWith(p: ProcessCameraProvider, withEffect: Boolean): Boolean {
         val sel = if (back) CameraSelector.DEFAULT_BACK_CAMERA else CameraSelector.DEFAULT_FRONT_CAMERA
         val ar = if (videoMode || ratio == 1 || ratio == 3) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
         val rs = ResolutionSelector.Builder().setAspectRatioStrategy(AspectRatioStrategy(ar, AspectRatioStrategy.FALLBACK_RULE_AUTO)).build()
         val pv = findViewById<PreviewView>(R.id.preview)
-        pv.scaleType = if (!videoMode && ratio == 3) PreviewView.ScaleType.FILL_CENTER else PreviewView.ScaleType.FIT_CENTER
+        pv.scaleType = if (ratio == 3) PreviewView.ScaleType.FILL_CENTER else PreviewView.ScaleType.FIT_CENTER
         val preview = Preview.Builder().setResolutionSelector(rs).build().also { it.setSurfaceProvider(pv.surfaceProvider) }
+        previewUc = preview
         p.unbindAll()
         try {
             val gb = UseCaseGroup.Builder().addUseCase(preview)
@@ -339,30 +588,41 @@ class MainActivity : BaseActivity(), SensorEventListener {
                 val q = when (getS("videoQ", "hd")) { "sd" -> Quality.SD; "fhd" -> Quality.FHD; "uhd" -> Quality.UHD; else -> Quality.HD }
                 val rec = Recorder.Builder().setQualitySelector(
                     QualitySelector.from(q, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD))).build()
-                val vc = VideoCapture.withOutput(rec)
+                val vb = VideoCapture.Builder(rec).setTargetRotation(devSurface)
+                if (getB("stab", false)) vb.setVideoStabilizationEnabled(true)
+                val vc = vb.build()
                 videoCapture = vc
-                gb.addUseCase(vc).addEffect(overlay)
+                gb.addUseCase(vc)
+                if (withEffect) gb.addEffect(overlay)
             } else {
-                val ic = ImageCapture.Builder().setResolutionSelector(rs)
+                val ic = ImageCapture.Builder().setResolutionSelector(rs).setTargetRotation(devSurface)
                     .setCaptureMode(if (getS("photoQ", "high") == "high") ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY else ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setFlashMode(when (flashMode) { 1 -> ImageCapture.FLASH_MODE_AUTO; 2 -> ImageCapture.FLASH_MODE_ON; else -> ImageCapture.FLASH_MODE_OFF })
                     .build()
                 imageCapture = ic
                 gb.addUseCase(ic)
-                if (ratio == 2) gb.setViewPort(ViewPort.Builder(Rational(1, 1), Surface.ROTATION_0).build())
             }
+            val vp: ViewPort? = when {
+                ratio == 2 -> ViewPort.Builder(Rational(1, 1), Surface.ROTATION_0).build()
+                videoMode && ratio == 0 -> ViewPort.Builder(Rational(3, 4), Surface.ROTATION_0).build()
+                else -> null
+            }
+            if (vp != null) gb.setViewPort(vp)
             val c = p.bindToLifecycle(this, sel, gb.build())
             cam = c
             sensorRot = c.cameraInfo.sensorRotationDegrees
+            c.cameraInfo.zoomState.removeObservers(this)
+            c.cameraInfo.zoomState.observe(this) { z -> updateZoomUi(z.zoomRatio) }
             val es = c.cameraInfo.exposureState
-            val seek = findViewById<SeekBar>(R.id.seekEv)
-            if (es.isExposureCompensationSupported) {
-                val r = es.exposureCompensationRange
-                evLower = r.lower; evStep = es.exposureCompensationStep.toFloat()
-                seek.isEnabled = true; seek.max = r.upper - r.lower; seek.progress = es.exposureCompensationIndex - r.lower
-            } else seek.isEnabled = false
-            applyFlash(); applyWb()
-        } catch (e: Exception) { toast(tr("This camera is not available", "यह कैमरा उपलब्ध नहीं है")) }
+            evSupported = es.isExposureCompensationSupported
+            if (evSupported) { evLower = es.exposureCompensationRange.lower; evUpper = es.exposureCompensationRange.upper; evStep = es.exposureCompensationStep.toFloat(); evIndex = es.exposureCompensationIndex }
+            minFocus = try { Camera2CameraInfo.from(c.cameraInfo).getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f } catch (e: Exception) { 0f }
+            applyFlash(); applyCam2()
+            return true
+        } catch (e: Exception) {
+            cam = null
+            return false
+        }
     }
 
     private fun applyFlash() {
@@ -370,12 +630,16 @@ class MainActivity : BaseActivity(), SensorEventListener {
         try { cam?.cameraControl?.enableTorch(flashMode == 3) } catch (e: Exception) { }
     }
 
-    private fun applyWb() {
+    private fun applyCam2() {
         val c = cam ?: return
-        val mode = if (wbIdx < 0) CaptureRequest.CONTROL_AWB_MODE_AUTO else WB_MODES[wbIdx]
         try {
-            Camera2CameraControl.from(c.cameraControl).setCaptureRequestOptions(
-                CaptureRequestOptions.Builder().setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, mode).build())
+            val b = CaptureRequestOptions.Builder()
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, if (wbIdx < 0) CaptureRequest.CONTROL_AWB_MODE_AUTO else WB_MODES[wbIdx])
+            if (focusMode == 2 && minFocus > 0f) {
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDist)
+            }
+            Camera2CameraControl.from(c.cameraControl).setCaptureRequestOptions(b.build())
         } catch (e: Exception) { }
     }
 
@@ -400,17 +664,9 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     private fun setMode(video: Boolean) { videoMode = video; updateUi(); bindCamera() }
 
-    private fun updateUi() {
-        findViewById<View>(R.id.tabPhoto).alpha = if (videoMode) 0.5f else 1f
-        findViewById<View>(R.id.tabVideo).alpha = if (videoMode) 1f else 0.5f
-        val sh = findViewById<TextView>(R.id.shutter)
-        sh.setBackgroundResource(if (videoMode) R.drawable.shutter_rec else R.drawable.shutter)
-        sh.text = if (recording != null) "■" else ""
-    }
-
     private fun shutterClick() {
         if (videoMode) { if (recording == null) startRecording() else recording?.stop(); return }
-        if (counting) { ui.removeCallbacksAndMessages(null); counting = false; findViewById<View>(R.id.countdown).visibility = View.GONE; return }
+        if (counting) { ui.removeCallbacksAndMessages(null); ui.post(tick); counting = false; findViewById<View>(R.id.countdown).visibility = View.GONE; return }
         if (timerSec > 0 && canCapture()) startCountdown(timerSec) else capture()
     }
 
@@ -418,11 +674,13 @@ class MainActivity : BaseActivity(), SensorEventListener {
         counting = true
         val tv = findViewById<TextView>(R.id.countdown)
         fun step(n: Int) {
-            if (n == 0) { tv.visibility = View.GONE; counting = false; capture() }
+            if (n == 0) { tv.visibility = View.GONE; counting = false; ui.post(tick); capture() }
             else { tv.text = "$n"; tv.visibility = View.VISIBLE; ui.postDelayed({ step(n - 1) }, 1000) }
         }
         step(sec)
     }
+
+    // ------------------------------------------------------------------ video
 
     @SuppressLint("MissingPermission")
     private fun startRecording() {
@@ -430,6 +688,8 @@ class MainActivity : BaseActivity(), SensorEventListener {
         val l = loc ?: return toast(tr("GPS fix not ready yet", "GPS फ़िक्स अभी नहीं मिला"))
         if (!canCapture()) return
         val nm = mediaName("VID", l)
+        recRot = rotRel(devSurface)
+        vc.targetRotation = devSurface
         currentVideoId = nm
         val cv = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, nm)
@@ -437,6 +697,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
             if (Build.VERSION.SDK_INT >= 29) put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/$brand/Video")
         }
         val opts = MediaStoreOutputOptions.Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI).setContentValues(cv).build()
+        if (getB("sound", true)) snd.play(MediaActionSound.START_VIDEO_RECORDING)
         recording = vc.output.prepareRecording(this, opts).withAudioEnabled()
             .start(ContextCompat.getMainExecutor(this)) { ev ->
                 when (ev) {
@@ -446,6 +707,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
                     }
                     is VideoRecordEvent.Finalize -> {
                         recording = null; paused = false; currentVideoId = null; recordingUi(false)
+                        if (getB("sound", true)) snd.play(MediaActionSound.STOP_VIDEO_RECORDING)
                         if (!ev.hasError()) showVideoResult(ev.outputResults.outputUri) else toast(tr("Video failed", "वीडियो नहीं बना"))
                     }
                     else -> {}
@@ -463,6 +725,8 @@ class MainActivity : BaseActivity(), SensorEventListener {
         updateUi()
     }
 
+    // ------------------------------------------------------------------ photo
+
     private fun capture() {
         val l = loc ?: return toast(tr("GPS fix not ready yet", "GPS फ़िक्स अभी नहीं मिला"))
         if (!canCapture()) return
@@ -473,6 +737,8 @@ class MainActivity : BaseActivity(), SensorEventListener {
         val jq = when (q) { "high" -> 90; "medium" -> 85; else -> 78 }
         val original = getB("autoOrig", false)
         val showDlg = getB("sharePhoto", true)
+        val mirror = !back && getB("mirror", false)
+        if (getB("sound", true)) snd.play(MediaActionSound.SHUTTER_CLICK)
         ic.takePicture(io, object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 try {
@@ -494,6 +760,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
                     val c = Canvas(out)
                     val m = Matrix(); m.postRotate(rot.toFloat())
                     when (rot) { 90 -> m.postTranslate(ch.toFloat(), 0f); 180 -> m.postTranslate(cw.toFloat(), ch.toFloat()); 270 -> m.postTranslate(0f, cw.toFloat()) }
+                    if (mirror) { m.postScale(-1f, 1f); m.postTranslate(out.width.toFloat(), 0f) }
                     c.setMatrix(m)
                     c.drawBitmap(src, cr, RectF(0f, 0f, cw.toFloat(), ch.toFloat()), Paint(Paint.FILTER_BITMAP_FLAG))
                     src.recycle()
@@ -574,19 +841,26 @@ class MainActivity : BaseActivity(), SensorEventListener {
         }
     }
 
+    // ------------------------------------------------------------------ helpers
+
     @Suppress("DEPRECATION")
     private fun isMockLoc(l: Location): Boolean = if (Build.VERSION.SDK_INT >= 31) l.isMock else l.isFromMockProvider
 
     private fun syncTime() { TrustedTime.sync { runOnUiThread { updateStatus() } } }
 
     private fun updateStatus() {
+        val tv = findViewById<TextView>(R.id.status) ?: return
         val t = if (TrustedTime.ok) "Time: server IST ✓" else tr("Time: not synced (check internet)", "समय सिंक नहीं (इंटरनेट देखें)")
-        val tv = findViewById<TextView>(R.id.status)
-        tv.setTextColor(if (mock) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt())
-        tv.text = if (mock) tr("⚠ MOCK LOCATION DETECTED - turn it off", "⚠ मॉक लोकेशन मिली - इसे बंद करें") + "\n$t" else "$gpsText\n$t"
+        tv.setTextColor(if (mock || locOff) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt())
+        tv.text = when {
+            locOff -> tr("⚠ Location is OFF - turn on GPS", "⚠ लोकेशन बंद है - GPS चालू करें") + "\n$t"
+            mock -> tr("⚠ MOCK LOCATION DETECTED - turn it off", "⚠ मॉक लोकेशन मिली - इसे बंद करें") + "\n$t"
+            else -> "$gpsText\n$t"
+        }
     }
 
     private fun canCapture(): Boolean {
+        if (locOff) { toast(tr("Turn on location to capture.", "कैप्चर के लिए लोकेशन चालू करें।")); ensureLocationOn(); return false }
         if (mock) { toast(tr("Mock location detected. Turn it off to capture.", "मॉक लोकेशन मिली। कैप्चर के लिए इसे बंद करें।")); return false }
         if (!TrustedTime.ok) { toast(tr("Server time not synced. Check internet.", "सर्वर टाइम सिंक नहीं। इंटरनेट देखें।")); syncTime(); return false }
         return true
@@ -601,7 +875,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         io.execute {
             val m = loadMedia(this).firstOrNull()
             val bm = m?.let { thumbOf(this, it.uri, it.video, 200) }
-            runOnUiThread { findViewById<ImageView>(R.id.btnGallery).setImageBitmap(bm) }
+            runOnUiThread { findViewById<ImageView>(R.id.btnGallery)?.setImageBitmap(bm) }
         }
     }
 

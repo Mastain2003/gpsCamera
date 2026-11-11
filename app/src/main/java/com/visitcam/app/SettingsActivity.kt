@@ -2,12 +2,21 @@ package com.visitcam.app
 
 import android.content.Intent
 import android.os.Bundle
+import android.graphics.Typeface
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 
 class SettingsActivity : BaseActivity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         val s = Screen(this, tr("Settings", "सेटिंग्स"))
+        s.list.addView(ImageView(this).apply { setImageResource(R.drawable.brand_logo) }, LinearLayout.LayoutParams(dp(72), dp(72)))
+        s.list.addView(TextView(this).apply {
+            text = tr(getString(R.string.brand_full), getString(R.string.brand_full_hi)); textSize = 15f
+            setTextColor(s.fg); typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(4), 0, 0)
+        })
 
         s.section(tr("General", "सामान्य"))
         s.choice(tr("Language", "भाषा"), "lang", "en", listOf("en" to "English", "hi" to "हिन्दी")) { recreate() }
@@ -25,12 +34,13 @@ class SettingsActivity : BaseActivity() {
             "focus" to tr("Focus", "फ़ोकस"), "capture" to tr("Capture", "फोटो लें"), "none" to tr("None", "कोई नहीं")))
 
         s.section(tr("Stamp", "स्टैम्प"))
-        s.row(tr("Stamp Style", "स्टैम्प स्टाइल"), null, STYLE_NAMES[getI("style", 0)]) { tv ->
-            AlertDialog.Builder(this).setTitle(tr("Stamp Style", "स्टैम्प स्टाइल"))
-                .setSingleChoiceItems(STYLE_NAMES, getI("style", 0)) { d, w -> putI("style", w); tv.text = STYLE_NAMES[w]; d.dismiss() }.show()
+        s.row(tr("Stamp Template", "स्टैम्प टेम्पलेट"), tr("Tap to see previews", "प्रीव्यू देखने के लिए दबाएँ"), STYLE_NAMES[getI("style", 0)]) { tv ->
+            pickStamp(this) { tv.text = STYLE_NAMES[getI("style", 0)] }
         }
-        s.choice(tr("Stamp Orientation", "स्टैम्प ओरिएंटेशन"), "orient", "auto", listOf(
-            "auto" to tr("Automatic", "ऑटोमैटिक"), "portrait" to tr("Portrait", "पोर्ट्रेट"), "landscape" to tr("Landscape", "लैंडस्केप")))
+        s.choice(tr("Stamp Width", "स्टैम्प चौड़ाई"), "orient", "auto", listOf(
+            "auto" to tr("Compact (fits any photo)", "कॉम्पैक्ट (हर फोटो में फिट)"), "landscape" to tr("Full width", "पूरी चौड़ाई")))
+        s.choice(tr("QR Code Content", "QR कोड में क्या हो"), "qrMode", "verify", listOf(
+            "verify" to tr("Verification info", "सत्यापन जानकारी"), "maps" to tr("Google Maps link", "गूगल मैप्स लिंक")))
         s.choice(tr("Stamp Size", "स्टैम्प साइज़"), "size", "normal", listOf(
             "normal" to tr("Normal", "सामान्य"), "small" to tr("Small", "छोटा")))
         s.choice(tr("Stamp Opacity", "स्टैम्प पारदर्शिता"), "opacity", "medium", listOf(

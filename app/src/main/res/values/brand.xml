@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- MASTAIN brand. To switch to Sanchi: change these 3 values and replace drawable/brand_logo.xml -->
-    <string name="app_name">Mastain GPS Camera</string>
-    <string name="brand_name">MASTAIN</string>
-    <color name="brand_primary">#1E5AA8</color>
+    <!-- Sanchi-UDS brand. To switch brand: change these values and replace drawable/brand_logo.png (and mipmap icons). -->
+    <string name="app_name">Sanchi-UDS GPS Camera</string>
+    <string name="brand_name">Sanchi-UDS</string>
+    <string name="brand_full">Ujjain Sahakari Dugdh Sangh Maryadit</string>
+    <string name="brand_full_hi">उज्जैन सहकारी दुग्ध संघ मर्यादित</string>
+    <color name="brand_primary">#1B1FC9</color>
+    <color name="brand_accent">#1CA9E0</color>
+    <color name="ic_bg">#FFFFFF</color>
 </resources>
