@@ -26,7 +26,9 @@ fun sampleData(ctx: Context, style: Int): StampData {
         lat, lng, l?.accuracy ?: 8f, true, true,
         fmtIst("EEEE, dd/MM/yyyy hh:mm a", ms) + " GMT +05:30", fmtIst("dd/MM/yyyy  hh:mm a", ms) + " IST",
         fmtIst("dd/MM/yyyy", ms), ms / 1000, id, p?.map, 135f, headingLine(135f), l?.altitude ?: 495.0, 0f,
-        "$brand|$id|%.6f,%.6f|${ms / 1000}".format(java.util.Locale.US, lat, lng)
+        "$brand|$id|%.6f,%.6f|${ms / 1000}".format(java.util.Locale.US, lat, lng),
+        topLogo = if (ctx.getB("topLogo", true)) ContextCompat.getDrawable(ctx, R.drawable.sanchi_logo)?.toBitmap(256, 256) else null,
+        topLogoPct = when (ctx.getS("logoSize", "medium")) { "small" -> 0.11f; "large" -> 0.22f; else -> 0.16f }
     )
 }
 

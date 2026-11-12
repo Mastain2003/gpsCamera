@@ -135,7 +135,14 @@ class GalleryActivity : BaseActivity() {
 
     private fun toggle(key: String) {
         if (!selected.remove(key)) selected.add(key)
-        if (selected.isEmpty()) selMode = false
+        selMode = selected.isNotEmpty()
+        rv.adapter?.notifyDataSetChanged(); updateBar()
+    }
+
+    private fun toggleGroup(items: List<MediaItem>) {
+        val allOn = items.all { it.uri.toString() in selected }
+        if (allOn) items.forEach { selected.remove(it.uri.toString()) } else items.forEach { selected.add(it.uri.toString()) }
+        selMode = selected.isNotEmpty()
         rv.adapter?.notifyDataSetChanged(); updateBar()
     }
 
@@ -173,7 +180,7 @@ class GalleryActivity : BaseActivity() {
         selAllTv.setOnClickListener {
             val cur = current()
             if (cur.all { it.uri.toString() in selected }) selected.clear() else cur.forEach { selected.add(it.uri.toString()) }
-            if (selected.isEmpty()) selMode = false
+            selMode = selected.isNotEmpty()
             rv.adapter?.notifyDataSetChanged(); updateBar()
         }
         shareTv.setOnClickListener {
@@ -244,14 +251,11 @@ class GalleryActivity : BaseActivity() {
             if (row is Row.Header) {
                 val v = h.itemView.tag as Array<TextView>
                 v[0].text = row.label + "  (" + row.items.size + ")"
-                val all = row.items.all { it.uri.toString() in selected }
-                v[1].visibility = if (selMode) View.VISIBLE else View.GONE
-                v[1].text = if (all) "●" else "○"
-                v[1].setOnClickListener {
-                    if (all) row.items.forEach { selected.remove(it.uri.toString()) } else row.items.forEach { selected.add(it.uri.toString()) }
-                    if (selected.isEmpty()) selMode = false
-                    notifyDataSetChanged(); updateBar()
-                }
+                val allOn = row.items.all { it.uri.toString() in selected }
+                v[1].visibility = View.VISIBLE
+                v[1].text = if (allOn) "●" else "○"
+                v[1].setTextColor(if (allOn) 0xFFFFCC00.toInt() else 0x99FFFFFF.toInt())
+                h.itemView.setOnClickListener { toggleGroup(row.items) }
                 return
             }
             row as Row.Cell

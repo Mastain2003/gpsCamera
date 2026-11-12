@@ -8,11 +8,13 @@
         <TextView android:id="@+id/btnFlip" style="@style/TopIcon" android:text="🔄"/>
         <TextView android:id="@+id/btnSettings" style="@style/TopIcon" android:text="⚙"/>
     </LinearLayout>
-    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+    <FrameLayout android:id="@+id/previewFrame" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <FrameLayout android:id="@+id/camArea" android:layout_width="match_parent" android:layout_height="match_parent" android:layout_gravity="center">
         <androidx.camera.view.PreviewView android:id="@+id/preview" android:layout_width="match_parent" android:layout_height="match_parent"/>
         <com.visitcam.app.StampView android:id="@+id/stampView" android:layout_width="match_parent" android:layout_height="match_parent"/>
         <com.visitcam.app.GridLines android:id="@+id/gridLines" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone"/>
         <com.visitcam.app.LevelView android:id="@+id/levelView" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone"/>
+        </FrameLayout>
         <View android:id="@+id/focusRing" android:layout_width="68dp" android:layout_height="68dp" android:background="@drawable/focus_ring" android:visibility="invisible"/>
         <TextView android:id="@+id/status" android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_margin="6dp" android:textColor="#FFFFFF" android:textSize="11sp" android:shadowColor="#000000" android:shadowRadius="3"/>

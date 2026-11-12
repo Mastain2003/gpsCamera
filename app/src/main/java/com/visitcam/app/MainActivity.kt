@@ -37,6 +37,7 @@ import android.view.OrientationEventListener
 import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.View
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -99,6 +100,12 @@ class MainActivity : BaseActivity(), SensorEventListener {
     private var evIndex = 0
     private var evStep = 1f
     private var optSel = "timer"
+    private var started = false
+    private var promptLoc = true
+    private var internalNav = false
+    private var fullAspect = 0.5f
+    @Volatile private var vidAspect = 0f
+    private var topLogoBmp: Bitmap? = null
     private var counting = false
     private var lastSig = ""
     private var dlgUri: Uri? = null
@@ -122,7 +129,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
     private val ovThread = HandlerThread("overlay").apply { start() }
     private val snd by lazy { MediaActionSound() }
     private val perms: Array<String> = arrayOf(
-        Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION
+        Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION
     ) + (if (Build.VERSION.SDK_INT <= 28) arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE) else emptyArray<String>())
     private val brand get() = getString(R.string.brand_name)
     private val hasGms get() = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(this) == ConnectionResult.SUCCESS
@@ -173,7 +180,14 @@ class MainActivity : BaseActivity(), SensorEventListener {
                     180 -> { cv.translate(bw, bh); cv.rotate(180f); uw = bw; uh = bh }
                     else -> { uw = bw; uh = bh }
                 }
-                drawStamp(cv, uw, uh, buildData(l, id))
+                var dw = uw; var dh = uh; var ox = 0f; var oy = 0f
+                val va = vidAspect
+                if (va > 0f) {
+                    val a = if (uw > uh) 1f / va else va
+                    if (uw / uh > a) { dw = uh * a; ox = (uw - dw) / 2f } else { dh = uw / a; oy = (uh - dh) / 2f }
+                }
+                cv.translate(ox, oy)
+                drawStamp(cv, dw, dh, buildData(l, id))
                 cv.restore()
             }
             true
@@ -187,12 +201,35 @@ class MainActivity : BaseActivity(), SensorEventListener {
         super.onCreate(b)
         setContentView(R.layout.activity_main)
         logoBmp = ContextCompat.getDrawable(this, R.drawable.brand_logo)?.toBitmap(128, 128)
+        topLogoBmp = ContextCompat.getDrawable(this, R.drawable.sanchi_logo)?.toBitmap(256, 256)
         fused = LocationServices.getFusedLocationProviderClient(this)
         ratio = getI("ratio", 0); gridMode = getI("gridMode", 0); timerSec = getI("timer", 0)
         lastSig = sig()
         wire()
-        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) start()
-        else ActivityCompat.requestPermissions(this, perms, 1)
+        if (permsGranted()) start() else ActivityCompat.requestPermissions(this, perms, 1)
+    }
+
+    private fun granted(p: String) = ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
+
+    /** Camera + (precise or approximate) location. Microphone is asked only when you first open VIDEO. */
+    private fun permsGranted() = granted(Manifest.permission.CAMERA) &&
+        (granted(Manifest.permission.ACCESS_FINE_LOCATION) || granted(Manifest.permission.ACCESS_COARSE_LOCATION)) &&
+        (Build.VERSION.SDK_INT > 28 || granted(Manifest.permission.WRITE_EXTERNAL_STORAGE))
+
+    override fun startActivity(intent: Intent?) {
+        if (intent?.component?.packageName == packageName) internalNav = true
+        super.startActivity(intent)
+    }
+
+    override fun startActivity(intent: Intent?, options: Bundle?) {
+        if (intent?.component?.packageName == packageName) internalNav = true
+        super.startActivity(intent, options)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!internalNav) promptLoc = true
+        internalNav = false
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -249,7 +286,24 @@ class MainActivity : BaseActivity(), SensorEventListener {
         })
         findViewById<PreviewView>(R.id.preview).setOnTouchListener { _, ev -> scaleDet.onTouchEvent(ev); tapDet.onTouchEvent(ev); true }
         findViewById<StampView>(R.id.stampView).provider = { loc?.let { l -> buildData(l, liveId()) } }
+        findViewById<View>(R.id.previewFrame).addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutCamArea() }
         applyTexts(); updateTop(); updateUi()
+    }
+
+    private fun portraitAspect(): Float = when (ratio) { 0 -> 0.75f; 1 -> 0.5625f; 2 -> 1f; else -> 0f }
+
+    private fun layoutCamArea() {
+        val frame = findViewById<View>(R.id.previewFrame) ?: return
+        val area = findViewById<View>(R.id.camArea) ?: return
+        val fw = frame.width; val fh = frame.height
+        if (fw == 0 || fh == 0) return
+        fullAspect = minOf(fw, fh).toFloat() / maxOf(fw, fh)
+        var ar = portraitAspect()
+        if (ar > 0f && fw > fh && ar != 1f) ar = 1f / ar
+        var cw = fw; var ch = fh
+        if (ar > 0f) { if (fw.toFloat() / fh > ar) cw = (fh * ar).toInt() else ch = (fw / ar).toInt() }
+        val lp = area.layoutParams as FrameLayout.LayoutParams
+        if (lp.width != cw || lp.height != ch) { lp.width = cw; lp.height = ch; lp.gravity = Gravity.CENTER; area.layoutParams = lp }
     }
 
     private fun sig() = getS("photoQ", "high") + getS("videoQ", "hd") + getB("stab", false)
@@ -270,7 +324,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
     private fun updateTop() {
         findViewById<TextView>(R.id.btnFlash).text = arrayOf("⚡✕", "⚡A", "⚡", "🔦")[flashMode]
         findViewById<GridLines>(R.id.gridLines).apply { mode = gridMode; visibility = if (gridMode == 0) View.GONE else View.VISIBLE }
-        findViewById<StampView>(R.id.stampView).ratioIdx = ratio
+        layoutCamArea()
         findViewById<View>(R.id.levelView).visibility = if (getB("level", false)) View.VISIBLE else View.GONE
     }
 
@@ -402,8 +456,19 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r)
-        if (r.isNotEmpty() && r.all { it == PackageManager.PERMISSION_GRANTED }) start()
-        else toast(tr("Camera, microphone and location permission are required", "कैमरा, माइक्रोफ़ोन और लोकेशन की अनुमति ज़रूरी है"))
+        if (c != 1) return
+        if (permsGranted()) { start(); return }
+        val permanent = perms.any { !granted(it) && !ActivityCompat.shouldShowRequestPermissionRationale(this, it) }
+        if (permanent) {
+            AlertDialog.Builder(this).setCancelable(false)
+                .setTitle(tr("Permission needed", "अनुमति ज़रूरी है"))
+                .setMessage(tr("Allow Camera and Location in app settings to use this app.", "ऐप इस्तेमाल करने के लिए सेटिंग में कैमरा और लोकेशन की अनुमति दें।"))
+                .setPositiveButton(tr("Open settings", "सेटिंग खोलें")) { _, _ ->
+                    internalNav = true
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton(tr("Later", "बाद में"), null).show()
+        } else toast(tr("Camera and location permission are required", "कैमरा और लोकेशन की अनुमति ज़रूरी है"))
     }
 
     override fun onResume() {
@@ -415,7 +480,11 @@ class MainActivity : BaseActivity(), SensorEventListener {
         sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         if (oel.canDetectOrientation()) oel.enable()
         ui.removeCallbacks(tick); ui.post(tick)
-        if (perms.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) ensureLocationOn()
+        if (permsGranted()) {
+            if (!started) start()
+            locOff = !locationEnabled(); updateStatus()
+            if (promptLoc) { promptLoc = false; ensureLocationOn() }
+        }
     }
 
     override fun onPause() {
@@ -456,10 +525,11 @@ class MainActivity : BaseActivity(), SensorEventListener {
     // ------------------------------------------------------------------ location
 
     private fun start() {
+        if (started) return
+        started = true
         startLocation()
         val f = ProcessCameraProvider.getInstance(this)
         f.addListener({ provider = f.get(); bindCamera() }, ContextCompat.getMainExecutor(this))
-        ensureLocationOn()
     }
 
     @SuppressLint("MissingPermission")
@@ -521,7 +591,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         AlertDialog.Builder(this).setCancelable(false)
             .setTitle(tr("Location is OFF", "लोकेशन बंद है"))
             .setMessage(tr("Turn on location (GPS) to capture verified photos and videos.", "सत्यापित फोटो और वीडियो के लिए लोकेशन (GPS) चालू करें।"))
-            .setPositiveButton(tr("Open settings", "सेटिंग खोलें")) { _, _ -> askingLoc = false; startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+            .setPositiveButton(tr("Open settings", "सेटिंग खोलें")) { _, _ -> askingLoc = false; internalNav = true; startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
             .setNegativeButton(tr("Later", "बाद में")) { _, _ -> askingLoc = false }
             .show()
     }
@@ -559,7 +629,9 @@ class MainActivity : BaseActivity(), SensorEventListener {
             customs, if (getB("camInd", false)) (if (back) "REAR" else "FRONT") else null,
             when (getS("opacity", "medium")) { "low" -> 90; "high" -> 210; else -> 150 },
             if (getS("size", "normal") == "small") 0.8f else 1f,
-            getS("orient", "auto") == "landscape"
+            getS("orient", "auto") == "landscape",
+            if (getB("topLogo", true)) topLogoBmp else null,
+            when (getS("logoSize", "medium")) { "small" -> 0.11f; "large" -> 0.22f; else -> 0.16f }
         )
     }
 
@@ -578,7 +650,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         val ar = if (videoMode || ratio == 1 || ratio == 3) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
         val rs = ResolutionSelector.Builder().setAspectRatioStrategy(AspectRatioStrategy(ar, AspectRatioStrategy.FALLBACK_RULE_AUTO)).build()
         val pv = findViewById<PreviewView>(R.id.preview)
-        pv.scaleType = if (ratio == 3) PreviewView.ScaleType.FILL_CENTER else PreviewView.ScaleType.FIT_CENTER
+        pv.scaleType = PreviewView.ScaleType.FILL_CENTER
         val preview = Preview.Builder().setResolutionSelector(rs).build().also { it.setSurfaceProvider(pv.surfaceProvider) }
         previewUc = preview
         p.unbindAll()
@@ -603,7 +675,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
                 gb.addUseCase(ic)
             }
             val vp: ViewPort? = when {
-                ratio == 2 -> ViewPort.Builder(Rational(1, 1), Surface.ROTATION_0).build()
+                videoMode && ratio == 2 -> ViewPort.Builder(Rational(1, 1), Surface.ROTATION_0).build()
                 videoMode && ratio == 0 -> ViewPort.Builder(Rational(3, 4), Surface.ROTATION_0).build()
                 else -> null
             }
@@ -656,13 +728,20 @@ class MainActivity : BaseActivity(), SensorEventListener {
         try { c.cameraControl.startFocusAndMetering(b.build()) } catch (e: Exception) { }
         val ring = findViewById<View>(R.id.focusRing)
         ring.animate().cancel()
-        ring.x = x - ring.width / 2f; ring.y = y - ring.height / 2f
+        val area = findViewById<View>(R.id.camArea)
+        ring.x = area.left + x - ring.width / 2f; ring.y = area.top + y - ring.height / 2f
         ring.alpha = 1f; ring.visibility = View.VISIBLE
         ring.animate().alpha(0f).setStartDelay(if (lock) 3000 else 800).setDuration(300).start()
         if (lock) toast(tr("Focus locked", "फ़ोकस लॉक"))
     }
 
-    private fun setMode(video: Boolean) { videoMode = video; updateUi(); bindCamera() }
+    private fun setMode(video: Boolean) {
+        videoMode = video; updateUi(); bindCamera()
+        if (video && !granted(Manifest.permission.RECORD_AUDIO) && !getB("audioAsked", false)) {
+            putB("audioAsked", true)
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 2)
+        }
+    }
 
     private fun shutterClick() {
         if (videoMode) { if (recording == null) startRecording() else recording?.stop(); return }
@@ -689,6 +768,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         if (!canCapture()) return
         val nm = mediaName("VID", l)
         recRot = rotRel(devSurface)
+        vidAspect = if (ratio == 2) 1f else if (ratio == 0) 0.75f else 0f
         vc.targetRotation = devSurface
         currentVideoId = nm
         val cv = ContentValues().apply {
@@ -698,7 +778,9 @@ class MainActivity : BaseActivity(), SensorEventListener {
         }
         val opts = MediaStoreOutputOptions.Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI).setContentValues(cv).build()
         if (getB("sound", true)) snd.play(MediaActionSound.START_VIDEO_RECORDING)
-        recording = vc.output.prepareRecording(this, opts).withAudioEnabled()
+        val pending = vc.output.prepareRecording(this, opts)
+        if (granted(Manifest.permission.RECORD_AUDIO)) pending.withAudioEnabled()
+        recording = pending
             .start(ContextCompat.getMainExecutor(this)) { ev ->
                 when (ev) {
                     is VideoRecordEvent.Status -> {
@@ -752,10 +834,17 @@ class MainActivity : BaseActivity(), SensorEventListener {
                     var s = 1
                     while (maxOf(o.outWidth, o.outHeight) / (s * 2) >= maxSide) s *= 2
                     val src = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = s }) ?: return
-                    var cr = Rect(crop.left / s, crop.top / s, crop.right / s, crop.bottom / s)
-                    if (cr.width() <= 0 || cr.height() <= 0 || cr.right > src.width || cr.bottom > src.height) cr = Rect(0, 0, src.width, src.height)
-                    val cw = cr.width(); val ch = cr.height()
                     val swap = rot == 90 || rot == 270
+                    val upW = if (swap) src.height else src.width; val upH = if (swap) src.width else src.height
+                    var cwU = upW; var chU = upH
+                    val pa = if (ratio == 3) fullAspect else portraitAspect()
+                    if (pa > 0f) {
+                        val ar = if (upW > upH) 1f / pa else pa
+                        if (upW.toFloat() / upH > ar) cwU = (upH * ar).toInt() else chU = (upW / ar).toInt()
+                    }
+                    val cw = if (swap) chU else cwU; val ch = if (swap) cwU else chU
+                    val cl = (src.width - cw) / 2; val ct = (src.height - ch) / 2
+                    val cr = Rect(cl, ct, cl + cw, ct + ch)
                     val out = Bitmap.createBitmap(if (swap) ch else cw, if (swap) cw else ch, Bitmap.Config.ARGB_8888)
                     val c = Canvas(out)
                     val m = Matrix(); m.postRotate(rot.toFloat())
@@ -850,17 +939,19 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     private fun updateStatus() {
         val tv = findViewById<TextView>(R.id.status) ?: return
-        val t = if (TrustedTime.ok) "Time: server IST ✓" else tr("Time: not synced (check internet)", "समय सिंक नहीं (इंटरनेट देखें)")
-        tv.setTextColor(if (mock || locOff) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt())
-        tv.text = when {
-            locOff -> tr("⚠ Location is OFF - turn on GPS", "⚠ लोकेशन बंद है - GPS चालू करें") + "\n$t"
-            mock -> tr("⚠ MOCK LOCATION DETECTED - turn it off", "⚠ मॉक लोकेशन मिली - इसे बंद करें") + "\n$t"
-            else -> "$gpsText\n$t"
+        val t = if (TrustedTime.ok) "" else tr("Server time not synced (check internet)", "सर्वर टाइम सिंक नहीं (इंटरनेट देखें)")
+        val msg = when {
+            locOff -> tr("⚠ Location is OFF - turn on GPS", "⚠ लोकेशन बंद है - GPS चालू करें")
+            mock -> tr("⚠ MOCK LOCATION DETECTED - turn it off", "⚠ मॉक लोकेशन मिली - इसे बंद करें")
+            else -> ""
         }
+        val text = listOf(msg, t).filter { it.isNotBlank() }.joinToString("\n")
+        tv.setTextColor(0xFFFF5252.toInt()); tv.text = text
+        tv.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun canCapture(): Boolean {
-        if (locOff) { toast(tr("Turn on location to capture.", "कैप्चर के लिए लोकेशन चालू करें।")); ensureLocationOn(); return false }
+        if (locOff) { toast(tr("Turn on location to capture.", "कैप्चर के लिए लोकेशन चालू करें।")); return false }
         if (mock) { toast(tr("Mock location detected. Turn it off to capture.", "मॉक लोकेशन मिली। कैप्चर के लिए इसे बंद करें।")); return false }
         if (!TrustedTime.ok) { toast(tr("Server time not synced. Check internet.", "सर्वर टाइम सिंक नहीं। इंटरनेट देखें।")); syncTime(); return false }
         return true

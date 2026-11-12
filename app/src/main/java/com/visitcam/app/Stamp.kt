@@ -19,7 +19,8 @@ class StampData(
     val id: String, val map: MapTile?, val heading: Float, val headingText: String,
     val altitude: Double, val speedKmh: Float, val qrText: String,
     val customs: List<String> = emptyList(), val camLabel: String? = null,
-    val alpha: Int = 150, val scale: Float = 1f, val wide: Boolean = false
+    val alpha: Int = 150, val scale: Float = 1f, val wide: Boolean = false,
+    val topLogo: Bitmap? = null, val topLogoPct: Float = 0.16f
 )
 
 fun wrapText(t: String, p: Paint, w: Float): List<String> {
@@ -75,14 +76,22 @@ private fun drawQr(c: Canvas, text: String, x: Float, y: Float, size: Float) {
 fun drawStamp(c: Canvas, w: Float, h: Float, d: StampData) {
     darkAlpha = d.alpha
     if (d.style == 1 || d.style == 2) watermark(c, w, h, d)
-    val sw = if (d.wide) w else minOf(w, h)
+    val base = minOf(w, h)
+    val sw = if (d.wide) w else base
+    val shift = (w - sw) / 2f
+    var logoRight = 0f
+    if (d.topLogo != null) {
+        val ls = base * d.topLogoPct; val lm = 0.03f * base
+        c.drawBitmap(d.topLogo, null, RectF(lm, lm, lm + ls, lm + ls), Paint(Paint.FILTER_BITMAP_FLAG))
+        logoRight = lm + ls
+    }
     c.save()
-    c.translate((w - sw) / 2f, 0f)
+    c.translate(shift, 0f)
     if (d.scale != 1f) c.scale(d.scale, d.scale, sw / 2f, h)
     when (d.style) {
         0 -> cardStamp(c, sw, h, d, 0)
         1 -> verified(c, sw, h, d)
-        2 -> light(c, sw, h, d)
+        2 -> light(c, sw, h, d, if (d.topLogo != null) maxOf(0.03f * sw, logoRight + 0.02f * base - shift) else 0.03f * sw)
         3 -> cardStamp(c, sw, h, d, 3)
         else -> cardStamp(c, sw, h, d, 4)
     }
@@ -256,14 +265,14 @@ private fun verified(c: Canvas, w: Float, h: Float, d: StampData) {
 
 // ---------- Light stamp ----------
 
-private fun light(c: Canvas, w: Float, h: Float, d: StampData) {
+private fun light(c: Canvas, w: Float, h: Float, d: StampData, px: Float) {
     val m = 0.03f * w
     val tp = paint(0.03f * w, true)
     val pillH = 0.06f * w; val logoS = 0.045f * w
     val pw = logoS + tp.measureText(d.shortTime) + 0.04f * w
-    c.drawRoundRect(RectF(m, m, m + pw, m + pillH), pillH / 2, pillH / 2, dark())
-    drawLogo(c, d.logo, m + 0.008f * w, m + (pillH - logoS) / 2, logoS)
-    c.drawText(d.shortTime, m + logoS + 0.02f * w, m + pillH * 0.66f, tp)
+    c.drawRoundRect(RectF(px, m, px + pw, m + pillH), pillH / 2, pillH / 2, dark())
+    drawLogo(c, d.logo, px + 0.008f * w, m + (pillH - logoS) / 2, logoS)
+    c.drawText(d.shortTime, px + logoS + 0.02f * w, m + pillH * 0.66f, tp)
     val b1 = paint(0.034f * w, true); val b2 = paint(0.026f * w)
     val l1 = d.region.ifBlank { "Location unavailable" }
     val l2 = "%.6f, %.6f · ±%.0f m".format(Locale.US, d.lat, d.lng, d.acc)

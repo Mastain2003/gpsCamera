@@ -45,25 +45,17 @@ class LevelView(c: Context, a: AttributeSet?) : View(c, a) {
 /** Shows the real stamp on top of the camera preview, rotated to stay upright with the phone. */
 class StampView(c: Context, a: AttributeSet?) : View(c, a) {
     var provider: (() -> StampData?)? = null
-    var ratioIdx = 0
-        set(v) { field = v; invalidate() }
     var rotDeg = 0
         set(v) { field = v; invalidate() }
 
     override fun onDraw(cv: Canvas) {
         val d = provider?.invoke() ?: return
         val vw = width.toFloat(); val vh = height.toFloat()
-        var ar = when (ratioIdx) { 0 -> 3f / 4; 1 -> 9f / 16; 2 -> 1f; else -> 0f }
-        if (ar > 0f && vw > vh && ar != 1f) ar = 1f / ar
-        var cw = vw; var ch = vh
-        if (ar > 0f) { if (vw / vh > ar) { cw = vh * ar } else { ch = vw / ar } }
-        val left = (vw - cw) / 2; val top = (vh - ch) / 2
         cv.save()
-        cv.clipRect(left, top, left + cw, top + ch)
-        cv.translate(left + cw / 2, top + ch / 2)
+        cv.translate(vw / 2, vh / 2)
         cv.rotate(-rotDeg.toFloat())
         val sideways = rotDeg == 90 || rotDeg == 270
-        val uw = if (sideways) ch else cw; val uh = if (sideways) cw else ch
+        val uw = if (sideways) vh else vw; val uh = if (sideways) vw else vh
         cv.translate(-uw / 2, -uh / 2)
         drawStamp(cv, uw, uh, d)
         cv.restore()
