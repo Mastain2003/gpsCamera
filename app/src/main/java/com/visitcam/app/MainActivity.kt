@@ -38,12 +38,14 @@ import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.ScrollView
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -99,7 +101,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
     private var evUpper = 0
     private var evIndex = 0
     private var evStep = 1f
-    private var optSel = "timer"
+    private var optSel: String? = null
     private var started = false
     private var promptLoc = true
     private var internalNav = false
@@ -142,8 +144,22 @@ class MainActivity : BaseActivity(), SensorEventListener {
         override fun onProviderDisabled(p: String) {}
     }
 
+    private val backCb = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() { closeOptions() }
+    }
+
     private val tick = object : Runnable {
-        override fun run() { findViewById<View>(R.id.stampView)?.invalidate(); ui.postDelayed(this, 1000) }
+        override fun run() {
+            findViewById<View>(R.id.stampView)?.invalidate()
+            if (started) {
+                val off = !locationEnabled()
+                if (off != locOff) {
+                    locOff = off; updateStatus()
+                    if (off && recording != null) { recording?.stop(); toast(tr("Recording stopped: location turned off", "रिकॉर्डिंग बंद: लोकेशन बंद हो गई")) }
+                }
+            }
+            ui.postDelayed(this, 1000)
+        }
     }
 
     private val oel by lazy {
@@ -205,6 +221,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         fused = LocationServices.getFusedLocationProviderClient(this)
         ratio = getI("ratio", 0); gridMode = getI("gridMode", 0); timerSec = getI("timer", 0)
         lastSig = sig()
+        onBackPressedDispatcher.addCallback(this, backCb)
         wire()
         if (permsGranted()) start() else ActivityCompat.requestPermissions(this, perms, 1)
     }
@@ -242,14 +259,25 @@ class MainActivity : BaseActivity(), SensorEventListener {
         refreshThumb()
     }
 
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.action == MotionEvent.ACTION_DOWN) {
+            val p = findViewById<View>(R.id.panelOptions)
+            if (p != null && p.visibility == View.VISIBLE) {
+                val pr = Rect(); p.getGlobalVisibleRect(pr)
+                val orr = Rect(); findViewById<View>(R.id.btnOptions).getGlobalVisibleRect(orr)
+                val x = ev.rawX.toInt(); val y = ev.rawY.toInt()
+                if (!pr.contains(x, y) && !orr.contains(x, y)) closeOptions()
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     private fun click(id: Int, f: () -> Unit) = findViewById<View>(id).setOnClickListener { f() }
 
     private fun wire() {
         click(R.id.btnFlash) { flashMode = (flashMode + 1) % 4; applyFlash(); updateTop() }
-        click(R.id.btnOptions) {
-            val p = findViewById<View>(R.id.panelOptions)
-            if (p.visibility == View.VISIBLE) p.visibility = View.GONE else { buildOptions(); p.visibility = View.VISIBLE }
-        }
+        click(R.id.btnOptions) { toggleOptions() }
+        click(R.id.noLoc) { if (locOff) { askingLoc = false; ensureLocationOn() } }
         click(R.id.btnFlip) { if (recording == null) { back = !back; bindCamera() } }
         click(R.id.btnSettings) { if (recording == null) startActivity(Intent(this, SettingsActivity::class.java)) }
         click(R.id.btnZoom1) { setZoom(1f) }
@@ -347,6 +375,17 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     // ------------------------------------------------------------------ camera options panel
 
+    private fun toggleOptions() {
+        val p = findViewById<View>(R.id.panelOptions)
+        if (p.visibility == View.VISIBLE) closeOptions()
+        else { optSel = null; buildOptions(); p.visibility = View.VISIBLE; backCb.isEnabled = true }
+    }
+
+    private fun closeOptions() {
+        findViewById<View>(R.id.panelOptions)?.visibility = View.GONE
+        optSel = null; backCb.isEnabled = false
+    }
+
     private fun optIcon(k: String) = when (k) {
         "timer" -> "⏱"; "ratio" -> "▭"; "grid" -> "▦"; "focus" -> "◎"; "bright" -> "☀"; "wb" -> "WB"
         "temp" -> "🌡"; "level" -> "📐"; "mirror" -> "⇆"; "sound" -> "🔊"; "stab" -> "🎥"; else -> "HD"
@@ -354,45 +393,103 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     private fun optLabel(k: String) = when (k) {
         "timer" -> tr("Timer", "टाइमर"); "ratio" -> tr("Ratio", "रेशियो"); "grid" -> tr("Grid", "ग्रिड")
-        "focus" -> tr("Focus", "फ़ोकस"); "bright" -> tr("Brightness", "ब्राइटनेस"); "wb" -> tr("White bal.", "व्हाइट बैल.")
-        "temp" -> tr("Temp", "तापमान"); "level" -> tr("Level", "लेवल"); "mirror" -> tr("Mirror", "मिरर")
+        "focus" -> tr("Focus", "फ़ोकस"); "bright" -> tr("Brightness", "ब्राइटनेस"); "wb" -> tr("White balance", "व्हाइट बैलेंस")
+        "temp" -> tr("Temperature", "तापमान"); "level" -> tr("Level", "लेवल"); "mirror" -> tr("Mirror", "मिरर")
         "sound" -> tr("Sound", "आवाज़"); "stab" -> tr("Stabilise", "स्टेबलाइज़"); else -> tr("Quality", "क्वालिटी")
+    }
+
+    private fun onOffText(b: Boolean) = if (b) tr("On", "चालू") else tr("Off", "बंद")
+    private fun gridNames() = listOf(tr("Off", "बंद"), "3×3", "4×4", tr("Golden", "गोल्डन"), tr("Diagonal", "तिरछा"), tr("Center", "केंद्र"))
+    private fun wbNames() = listOf(tr("Auto", "ऑटो"), tr("Incandescent", "बल्ब"), tr("Fluorescent", "ट्यूबलाइट"), tr("Daylight", "दिन"), tr("Cloudy", "बादल"), tr("Shade", "छाया"))
+
+    private fun optValue(k: String): String = when (k) {
+        "timer" -> if (timerSec == 0) tr("Off", "बंद") else "${timerSec}s"
+        "ratio" -> arrayOf("4:3", "16:9", "1:1", "Full")[ratio]
+        "grid" -> gridNames()[gridMode]
+        "focus" -> arrayOf(tr("Auto", "ऑटो"), tr("Lock", "लॉक"), tr("Manual", "मैनुअल"))[focusMode]
+        "bright" -> if (evSupported) "%+.1f".format(Locale.US, evIndex * evStep) else "—"
+        "wb" -> wbNames()[wbIdx + 1]
+        "temp" -> if (wbIdx < 0) tr("Auto", "ऑटो") else "${WB_K[wbIdx]}K"
+        "level" -> onOffText(getB("level", false))
+        "mirror" -> onOffText(getB("mirror", false))
+        "sound" -> onOffText(getB("sound", true))
+        "stab" -> onOffText(getB("stab", false))
+        else -> getS("photoQ", "high").replaceFirstChar { it.uppercase() } + " · " + getS("videoQ", "hd").uppercase()
     }
 
     private fun buildOptions() {
         val root = findViewById<LinearLayout>(R.id.panelOptions)
+        val frame = findViewById<View>(R.id.previewFrame)
         root.removeAllViews()
-        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        OPT_KEYS.forEach { k ->
-            row.addView(TextView(this).apply {
-                text = optIcon(k) + "\n" + optLabel(k); textSize = 11f; gravity = Gravity.CENTER
-                setTextColor(if (k == optSel) 0xFFFFCC00.toInt() else Color.WHITE)
-                setPadding(dp(10), dp(6), dp(10), dp(6))
-                setOnClickListener { optSel = k; buildOptions() }
-            })
-        }
-        hs.addView(row); root.addView(hs)
-        root.addView(optDetail(optSel))
+        root.setBackgroundResource(R.drawable.panel_card)
+        root.setPadding(dp(14), dp(12), dp(14), dp(14))
+        val lp = root.layoutParams as FrameLayout.LayoutParams
+        lp.width = minOf(frame.width - dp(16), dp(340)).coerceAtLeast(dp(220)); lp.gravity = Gravity.TOP or Gravity.START
+        root.layoutParams = lp
+        val sel = optSel
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = if (sel == null) tr("Camera settings", "कैमरा सेटिंग्स") else "‹   " + optLabel(sel)
+            textSize = 16f; setTextColor(Color.WHITE); typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(0, dp(4), dp(8), dp(4))
+            setOnClickListener { if (sel != null) { optSel = null; buildOptions() } }
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(TextView(this).apply {
+            text = "✕"; textSize = 18f; setTextColor(0xFFCCCCCC.toInt()); setPadding(dp(10), dp(4), dp(4), dp(4))
+            setOnClickListener { closeOptions() }
+        })
+        root.addView(header)
+        root.addView(if (sel == null) optGrid(lp.width - dp(28), frame.height) else optDetail(sel))
     }
 
-    private fun note(t: String): View = TextView(this).apply { text = t; setTextColor(0xFFCCCCCC.toInt()); textSize = 13f; setPadding(dp(8), dp(8), dp(8), dp(8)) }
+    private fun tile(k: String): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+        setPadding(dp(4), dp(12), dp(4), dp(10)); setBackgroundResource(R.drawable.tile_bg)
+        addView(TextView(this@MainActivity).apply { text = optIcon(k); textSize = 22f; gravity = Gravity.CENTER; setTextColor(Color.WHITE) })
+        addView(TextView(this@MainActivity).apply { text = optLabel(k); textSize = 12f; gravity = Gravity.CENTER; setTextColor(Color.WHITE); maxLines = 1 })
+        addView(TextView(this@MainActivity).apply { text = optValue(k); textSize = 11f; gravity = Gravity.CENTER; setTextColor(0xFFFFCC00.toInt()); maxLines = 1 })
+        setOnClickListener { optSel = k; buildOptions() }
+    }
 
-    private fun chips(items: List<String>, sel: Int, pick: (Int) -> Unit): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        items.forEachIndexed { i, t ->
-            row.addView(TextView(this).apply {
-                text = t; textSize = 14f; setPadding(dp(14), dp(8), dp(14), dp(8))
-                setTextColor(if (i == sel) 0xFFFFCC00.toInt() else Color.WHITE)
-                setOnClickListener { pick(i); buildOptions() }
-            })
+    private fun optGrid(width: Int, frameH: Int): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(8), 0, 0) }
+        OPT_KEYS.chunked(3).forEach { keys ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            keys.forEach { k -> row.addView(tile(k), LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), dp(4), dp(4), dp(4)) }) }
+            col.addView(row)
         }
-        return HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(row) }
+        val sv = ScrollView(this)
+        sv.addView(col)
+        col.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
+        val maxH = (frameH * 0.8f).toInt() - dp(70)
+        sv.layoutParams = LinearLayout.LayoutParams(-1, minOf(col.measuredHeight, maxH).coerceAtLeast(dp(120)))
+        return sv
+    }
+
+    private fun note(t: String): View = TextView(this).apply { text = t; setTextColor(0xFFCCCCCC.toInt()); textSize = 13f; setPadding(dp(4), dp(10), dp(4), dp(4)) }
+
+    private fun chipGrid(items: List<String>, sel: Int, perRow: Int = 3, pick: (Int) -> Unit): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(8), 0, 0) }
+        items.chunked(perRow).forEachIndexed { r, rowItems ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            rowItems.forEachIndexed { c, t ->
+                val i = r * perRow + c
+                row.addView(TextView(this).apply {
+                    text = t; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(6), dp(11), dp(6), dp(11)); maxLines = 1
+                    setBackgroundResource(if (i == sel) R.drawable.chip_on else R.drawable.chip_bg)
+                    setTextColor(if (i == sel) Color.BLACK else Color.WHITE)
+                    setOnClickListener { pick(i); buildOptions() }
+                }, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+            }
+            repeat(perRow - rowItems.size) { row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f)) }
+            col.addView(row)
+        }
+        return col
     }
 
     private fun slider(max: Int, prog: Int, label: (Int) -> String, onChange: (Int) -> Unit): View {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
-        val tv = TextView(this).apply { text = label(prog); setTextColor(Color.WHITE); textSize = 13f }
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(10), dp(4), dp(4)) }
+        val tv = TextView(this).apply { text = label(prog); setTextColor(Color.WHITE); textSize = 14f }
         val sb = SeekBar(this).apply { this.max = max; progress = prog }
         sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar, p: Int, user: Boolean) { tv.text = label(p); if (user) onChange(p) }
@@ -404,19 +501,18 @@ class MainActivity : BaseActivity(), SensorEventListener {
     }
 
     private fun onOff(key: String, def: Boolean, after: () -> Unit = {}): View =
-        chips(listOf(tr("Off", "बंद"), tr("On", "चालू")), if (getB(key, def)) 1 else 0) { putB(key, it == 1); after() }
+        chipGrid(listOf(tr("Off", "बंद"), tr("On", "चालू")), if (getB(key, def)) 1 else 0, 2) { putB(key, it == 1); after() }
 
     private fun optDetail(k: String): View {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         when (k) {
-            "timer" -> col.addView(chips(listOf(tr("Off", "बंद"), "3 s", "5 s", "10 s"), intArrayOf(0, 3, 5, 10).indexOf(timerSec).coerceAtLeast(0)) {
+            "timer" -> col.addView(chipGrid(listOf(tr("Off", "बंद"), "3 s", "5 s", "10 s"), intArrayOf(0, 3, 5, 10).indexOf(timerSec).coerceAtLeast(0), 4) {
                 timerSec = intArrayOf(0, 3, 5, 10)[it]; putI("timer", timerSec) })
-            "ratio" -> col.addView(chips(listOf("4:3", "16:9", "1:1", "Full"), ratio) {
+            "ratio" -> col.addView(chipGrid(listOf("4:3", "16:9", "1:1", "Full"), ratio, 4) {
                 if (recording == null) { ratio = it; putI("ratio", it); updateTop(); bindCamera() } })
-            "grid" -> col.addView(chips(listOf(tr("Off", "बंद"), "3×3", "4×4", tr("Golden", "गोल्डन"), tr("Diagonal", "तिरछा"), tr("Center", "केंद्र")), gridMode) {
-                gridMode = it; putI("gridMode", it); updateTop() })
+            "grid" -> col.addView(chipGrid(gridNames(), gridMode) { gridMode = it; putI("gridMode", it); updateTop() })
             "focus" -> {
-                col.addView(chips(listOf(tr("Auto", "ऑटो"), tr("Lock", "लॉक"), tr("Manual", "मैनुअल")), focusMode) {
+                col.addView(chipGrid(listOf(tr("Auto", "ऑटो"), tr("Lock", "लॉक"), tr("Manual", "मैनुअल")), focusMode) {
                     focusMode = it; if (it == 1) focusAt(findViewById<View>(R.id.preview).width / 2f, findViewById<View>(R.id.preview).height / 2f, true); applyCam2() })
                 if (focusMode == 2) {
                     if (minFocus > 0f) col.addView(slider(100, (focusDist / minFocus * 100).toInt(),
@@ -428,12 +524,11 @@ class MainActivity : BaseActivity(), SensorEventListener {
                 { p -> tr("Exposure", "एक्सपोज़र") + ": %+.1f EV".format(Locale.US, (p + evLower) * evStep) }) { p ->
                 evIndex = p + evLower; cam?.cameraControl?.setExposureCompensationIndex(evIndex) })
             else col.addView(note(tr("Not supported on this camera", "इस कैमरे में उपलब्ध नहीं")))
-            "wb" -> col.addView(chips(listOf(tr("Auto", "ऑटो"), tr("Incandescent", "बल्ब"), tr("Fluorescent", "ट्यूबलाइट"), tr("Daylight", "दिन"), tr("Cloudy", "बादल"), tr("Shade", "छाया")), wbIdx + 1) {
-                wbIdx = it - 1; applyCam2() })
+            "wb" -> col.addView(chipGrid(wbNames(), wbIdx + 1) { wbIdx = it - 1; applyCam2() })
             "temp" -> {
-                col.addView(chips(listOf(tr("Auto", "ऑटो"), tr("Manual", "मैनुअल")), if (wbIdx < 0) 0 else 1) { wbIdx = if (it == 0) -1 else 2; applyCam2() })
+                col.addView(chipGrid(listOf(tr("Auto", "ऑटो"), tr("Manual", "मैनुअल")), if (wbIdx < 0) 0 else 1, 2) { wbIdx = if (it == 0) -1 else 2; applyCam2() })
                 if (wbIdx >= 0) col.addView(slider(4, wbIdx, { p ->
-                    tr("Temperature", "तापमान") + ": ${WB_K[p]}K  " + (if (p < 2) tr("warm", "गर्म") else if (p > 2) tr("cool", "ठंडा") else tr("neutral", "सामान्य"))
+                    "${WB_K[p]}K  " + (if (p < 2) tr("warm", "गर्म") else if (p > 2) tr("cool", "ठंडा") else tr("neutral", "सामान्य"))
                 }) { p -> wbIdx = p; applyCam2() })
             }
             "level" -> col.addView(onOff("level", false) { updateTop() })
@@ -442,10 +537,10 @@ class MainActivity : BaseActivity(), SensorEventListener {
             "stab" -> { col.addView(onOff("stab", false) { if (videoMode && recording == null) bindCamera() }); col.addView(note(tr("Video stabilisation", "वीडियो स्टेबलाइज़ेशन"))) }
             else -> {
                 col.addView(note(tr("Photo quality", "फोटो क्वालिटी")))
-                col.addView(chips(listOf(tr("High", "उच्च"), tr("Medium", "मध्यम"), tr("Low", "कम")), listOf("high", "medium", "low").indexOf(getS("photoQ", "high")).coerceAtLeast(0)) {
+                col.addView(chipGrid(listOf(tr("High", "उच्च"), tr("Medium", "मध्यम"), tr("Low", "कम")), listOf("high", "medium", "low").indexOf(getS("photoQ", "high")).coerceAtLeast(0)) {
                     putS("photoQ", listOf("high", "medium", "low")[it]) })
                 col.addView(note(tr("Video quality", "वीडियो क्वालिटी")))
-                col.addView(chips(listOf("SD", "HD", "Full HD", "4K"), listOf("sd", "hd", "fhd", "uhd").indexOf(getS("videoQ", "hd")).coerceAtLeast(0)) {
+                col.addView(chipGrid(listOf("SD", "HD", "Full HD", "4K"), listOf("sd", "hd", "fhd", "uhd").indexOf(getS("videoQ", "hd")).coerceAtLeast(0), 4) {
                     putS("videoQ", listOf("sd", "hd", "fhd", "uhd")[it]) })
             }
         }
@@ -939,19 +1034,24 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     private fun updateStatus() {
         val tv = findViewById<TextView>(R.id.status) ?: return
-        val t = if (TrustedTime.ok) "" else tr("Server time not synced (check internet)", "सर्वर टाइम सिंक नहीं (इंटरनेट देखें)")
-        val msg = when {
-            locOff -> tr("⚠ Location is OFF - turn on GPS", "⚠ लोकेशन बंद है - GPS चालू करें")
-            mock -> tr("⚠ MOCK LOCATION DETECTED - turn it off", "⚠ मॉक लोकेशन मिली - इसे बंद करें")
+        val nl = findViewById<TextView>(R.id.noLoc) ?: return
+        val blocked = locOff || mock
+        findViewById<View>(R.id.shutter)?.alpha = if (blocked) 0.35f else 1f
+        nl.visibility = if (blocked) View.VISIBLE else View.GONE
+        nl.text = if (locOff) tr("📍 Location is OFF\nTurn on location to take photos and videos.\n\nTap here to turn it on",
+            "📍 लोकेशन बंद है\nफोटो और वीडियो के लिए लोकेशन चालू करें।\n\nचालू करने के लिए यहाँ दबाएँ")
+        else tr("⚠ Mock location detected\nTurn it off to take photos and videos.", "⚠ मॉक लोकेशन मिली\nफोटो और वीडियो के लिए इसे बंद करें।")
+        val t = when {
+            !TrustedTime.ok -> tr("Server time not synced (check internet)", "सर्वर टाइम सिंक नहीं (इंटरनेट देखें)")
+            loc == null && !blocked -> tr("Waiting for GPS fix…", "GPS फ़िक्स का इंतज़ार…")
             else -> ""
         }
-        val text = listOf(msg, t).filter { it.isNotBlank() }.joinToString("\n")
-        tv.setTextColor(0xFFFF5252.toInt()); tv.text = text
-        tv.visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        tv.setTextColor(0xFFFFCC00.toInt()); tv.text = t
+        tv.visibility = if (t.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun canCapture(): Boolean {
-        if (locOff) { toast(tr("Turn on location to capture.", "कैप्चर के लिए लोकेशन चालू करें।")); return false }
+        if (locOff) { toast(tr("Location is OFF - turn it on to take photos and videos.", "लोकेशन बंद है - फोटो और वीडियो के लिए चालू करें।")); return false }
         if (mock) { toast(tr("Mock location detected. Turn it off to capture.", "मॉक लोकेशन मिली। कैप्चर के लिए इसे बंद करें।")); return false }
         if (!TrustedTime.ok) { toast(tr("Server time not synced. Check internet.", "सर्वर टाइम सिंक नहीं। इंटरनेट देखें।")); syncTime(); return false }
         return true
