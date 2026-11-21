@@ -5,7 +5,7 @@
     <string name="brand_name">Mastain</string>
     <string name="brand_full">Mastain</string>
     <string name="brand_full_hi">मस्ताँई</string>
-    <color name="brand_primary">#1B1FC9</color>
-    <color name="brand_accent">#1CA9E0</color>
-    <color name="ic_bg">#FFFFFF</color>
+    <color name="brand_primary">#0B5FCC</color>
+    <color name="brand_accent">#F5A623</color>
+    <color name="ic_bg">#0B5FCC</color>
 </resources>
