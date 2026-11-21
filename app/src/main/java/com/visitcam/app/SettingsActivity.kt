@@ -45,7 +45,7 @@ class SettingsActivity : BaseActivity() {
             "normal" to tr("Normal", "सामान्य"), "small" to tr("Small", "छोटा")))
         s.choice(tr("Stamp Opacity", "स्टैम्प पारदर्शिता"), "opacity", "medium", listOf(
             "low" to tr("Light", "हल्का"), "medium" to tr("Medium", "मध्यम"), "high" to tr("Dark", "गहरा")))
-        s.toggle(tr("Show Sanchi logo on photos", "फोटो पर सांची लोगो दिखाएँ"), tr("Top-left corner of photos and videos", "फोटो और वीडियो के ऊपर बाएँ कोने में"), "topLogo", true)
+        s.toggle(tr("Show Mastain logo on photos", "फोटो पर मस्ताँई लोगो दिखाएँ"), tr("Top-left corner of photos and videos", "फोटो और वीडियो के ऊपर बाएँ कोने में"), "topLogo", true)
         s.choice(tr("Top-left logo size", "ऊपरी लोगो का साइज़"), "logoSize", "medium", listOf(
             "small" to tr("Small", "छोटा"), "medium" to tr("Medium", "मध्यम"), "large" to tr("Large", "बड़ा")))
         s.toggle(tr("Show App Logo", "ऐप लोगो दिखाएँ"), tr("Brand logo on stamp", "स्टैम्प पर ब्रांड लोगो"), "logo", true)
