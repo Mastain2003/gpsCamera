@@ -217,7 +217,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
         super.onCreate(b)
         setContentView(R.layout.activity_main)
         logoBmp = ContextCompat.getDrawable(this, R.drawable.brand_logo)?.toBitmap(128, 128)
-        topLogoBmp = ContextCompat.getDrawable(this, R.drawable.sanchi_logo)?.toBitmap(256, 256)
+        topLogoBmp = ContextCompat.getDrawable(this, R.drawable.brand_logo)?.toBitmap(256, 256)
         fused = LocationServices.getFusedLocationProviderClient(this)
         ratio = getI("ratio", 0); gridMode = getI("gridMode", 0); timerSec = getI("timer", 0)
         lastSig = sig()
@@ -952,7 +952,7 @@ class MainActivity : BaseActivity(), SensorEventListener {
                     if (original) saveBitmap(out, nm + "_ORG", jq)
                     if (place == null) refreshPlace(l)
                     drawStamp(c, out.width.toFloat(), out.height.toFloat(), buildData(l, nm))
-                    val tw = 900; val th = (out.height * (tw / out.width.toFloat())).toInt().coerceAtLeast(1)
+                    val tw = minOf(1600, out.width); val th = (out.height * (tw / out.width.toFloat())).toInt().coerceAtLeast(1)
                     val thumb = Bitmap.createScaledBitmap(out, tw, th, true)
                     var dlg: AlertDialog? = null
                     runOnUiThread {
@@ -980,8 +980,12 @@ class MainActivity : BaseActivity(), SensorEventListener {
 
     private fun showPreview(bm: Bitmap): AlertDialog {
         dlgUri = null
-        val iv = ImageView(this).apply { setImageBitmap(bm); adjustViewBounds = true; setPadding(24, 24, 24, 0) }
-        val d = AlertDialog.Builder(this).setTitle(tr("Saving…", "सहेज रहे हैं…")).setView(iv)
+        val zoom = ZoomImageView(this).apply {
+            setImageBitmap(bm)
+            layoutParams = FrameLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.6f).toInt())
+        }
+        val box = FrameLayout(this).apply { setPadding(16, 16, 16, 0); addView(zoom) }
+        val d = AlertDialog.Builder(this).setTitle(tr("Saving…", "सहेज रहे हैं…")).setView(box)
             .setPositiveButton(tr("Share", "शेयर"), null)
             .setNeutralButton(tr("Gallery", "गैलरी")) { _, _ -> startActivity(Intent(this, GalleryActivity::class.java)) }
             .setNegativeButton(tr("Close", "बंद करें"), null).create()

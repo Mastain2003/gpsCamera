@@ -4,6 +4,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -45,13 +46,13 @@ fun thumbOf(ctx: Context, uri: Uri, video: Boolean, size: Int): Bitmap? = try {
 } catch (e: Exception) { null }
 
 fun loadMedia(ctx: Context): List<MediaItem> {
-    val brand = ctx.getString(R.string.brand_name)
+    val names = listOf(ctx.getString(R.string.brand_name)) + ctx.getString(R.string.brand_old_names).split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val list = mutableListOf<MediaItem>()
     fun q(base: Uri, video: Boolean) {
         val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED, MediaStore.MediaColumns.DISPLAY_NAME)
-        val sel: String; val args: Array<String>
-        if (Build.VERSION.SDK_INT >= 29) { sel = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"; args = arrayOf("%/$brand/%") }
-        else { sel = MediaStore.MediaColumns.DISPLAY_NAME + " LIKE ?"; args = arrayOf("${brand}_%") }
+        val col = if (Build.VERSION.SDK_INT >= 29) MediaStore.MediaColumns.RELATIVE_PATH else MediaStore.MediaColumns.DISPLAY_NAME
+        val sel = names.joinToString(" OR ") { "$col LIKE ?" }
+        val args = names.map { if (Build.VERSION.SDK_INT >= 29) "%/$it/%" else "${it}_%" }.toTypedArray()
         ctx.contentResolver.query(base, proj, sel, args, MediaStore.MediaColumns.DATE_ADDED + " DESC")?.use { c ->
             while (c.moveToNext()) list.add(MediaItem(ContentUris.withAppendedId(base, c.getLong(0)), video, c.getLong(1), c.getString(2) ?: ""))
         }
@@ -237,7 +238,7 @@ class GalleryActivity : BaseActivity() {
             val play = tv("▶", 18f).apply { layoutParams = FrameLayout.LayoutParams(-2, -2, android.view.Gravity.BOTTOM or android.view.Gravity.END).apply { setMargins(0, 0, 10, 6) } }
             val chk = tv("✓", 16f, true).apply {
                 gravity = android.view.Gravity.CENTER
-                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFF1B1FC9.toInt()); setStroke(3, android.graphics.Color.WHITE) }
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(androidx.core.content.ContextCompat.getColor(this@GalleryActivity, R.color.brand_primary)); setStroke(3, android.graphics.Color.WHITE) }
                 layoutParams = FrameLayout.LayoutParams(dp(26), dp(26), android.view.Gravity.TOP or android.view.Gravity.START).apply { setMargins(dp(6), dp(6), 0, 0) }
             }
             cell.addView(iv); cell.addView(play); cell.addView(chk)
@@ -300,6 +301,7 @@ class ViewerActivity : BaseActivity() {
         gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null) return false
+                if (findViewById<ZoomImageView>(R.id.img).isZoomed() || e2.pointerCount > 1) return false
                 val dx = e2.x - e1.x; val dy = e2.y - e1.y
                 if (Math.abs(dx) > 120 && Math.abs(dx) > Math.abs(dy) * 1.5f) { go(if (dx < 0) 1 else -1); return true }
                 return false
@@ -331,8 +333,8 @@ class ViewerActivity : BaseActivity() {
 
     private fun show() {
         val m = items[idx]
-        findViewById<TextView>(R.id.counter).text = "${idx + 1} / ${items.size}   (swipe left or right)"
-        val iv = findViewById<ImageView>(R.id.img)
+        findViewById<TextView>(R.id.counter).text = "${idx + 1} / ${items.size}   (pinch to zoom, swipe for next)"
+        val iv = findViewById<ZoomImageView>(R.id.img)
         val vv = findViewById<VideoView>(R.id.vid)
         vv.stopPlayback()
         if (m.video) {
@@ -342,7 +344,20 @@ class ViewerActivity : BaseActivity() {
             vv.setOnPreparedListener { vv.start() }
         } else {
             vv.visibility = View.GONE; iv.visibility = View.VISIBLE
-            iv.setImageURI(m.uri)
+            iv.setImageDrawable(null)
+            val mine = idx
+            Thread {
+                val bm = loadSampled(m.uri, 3072)
+                runOnUiThread { if (idx == mine && bm != null) iv.setImageBitmap(bm) }
+            }.start()
         }
     }
+
+    private fun loadSampled(uri: Uri, maxSide: Int): Bitmap? = try {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, o) }
+        var s = 1
+        while (maxOf(o.outWidth, o.outHeight) / (s * 2) >= maxSide) s *= 2
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = s }) }
+    } catch (e: Exception) { null }
 }
