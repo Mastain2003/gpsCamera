@@ -46,7 +46,7 @@ fun thumbOf(ctx: Context, uri: Uri, video: Boolean, size: Int): Bitmap? = try {
 } catch (e: Exception) { null }
 
 fun loadMedia(ctx: Context): List<MediaItem> {
-    val names = listOf(ctx.getString(R.string.brand_name)) + ctx.getString(R.string.brand_old_names).split(",").map { it.trim() }.filter { it.isNotEmpty() }
+    val names = listOf(ctx.getString(R.string.brand_name)) //+ ctx.getString(R.string.brand_old_names).split(",").map { it.trim() }.filter { it.isNotEmpty() }
     val list = mutableListOf<MediaItem>()
     fun q(base: Uri, video: Boolean) {
         val proj = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATE_ADDED, MediaStore.MediaColumns.DISPLAY_NAME)
