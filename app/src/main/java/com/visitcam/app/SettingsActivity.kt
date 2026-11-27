@@ -20,11 +20,11 @@ class SettingsActivity : BaseActivity() {
 
         s.section(tr("General", "सामान्य"))
         s.choice(tr("Language", "भाषा"), "lang", "en", listOf("en" to "English", "hi" to "हिन्दी")) { recreate() }
-        s.choice(tr("App Theme", "ऐप थीम"), "theme", "light", listOf(
+        s.choice(tr("App Theme", "ऐप थीम"), "theme", "system", listOf(
             "light" to tr("Light mode", "लाइट मोड"), "dark" to tr("Dark mode", "डार्क मोड"), "system" to tr("System", "सिस्टम"))) { recreate() }
 
         s.section(tr("Camera", "कैमरा"))
-        s.choice(tr("Photo Quality", "फोटो क्वालिटी"), "photoQ", "high", listOf(
+        s.choice(tr("Photo Quality", "फोटो क्वालिटी"), "photoQ", "medium", listOf(
             "high" to tr("High", "उच्च"), "medium" to tr("Medium", "मध्यम"), "low" to tr("Low (fast)", "कम (तेज़)")))
         s.choice(tr("Video Quality", "वीडियो क्वालिटी"), "videoQ", "hd", listOf(
             "sd" to "SD", "hd" to "HD", "fhd" to "Full HD", "uhd" to "4K"))
